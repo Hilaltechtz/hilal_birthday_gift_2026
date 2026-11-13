@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Cormorant Garamond", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --color-royal-deep: #0e0619;
+  --color-royal-velvet: #1b0b2e;
+  --color-royal-plum: #2a1246;
+  --color-champagne: #e8c574;
+  --color-champagne-light: #f6e1a8;
+  --color-blush: #f5b8d0;
+  --color-lavender: #cbb4ec;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: var(--font-sans);
+    background-color: var(--studio-bg, #0e0619);
+    color: var(--studio-text, #fdf9ff);
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-serif);
+    text-wrap: balance;
+  }
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-10px) rotate(1.2deg);
+  }
+}
+
+@keyframes shimmerGold {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes eqBar {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-float-slow {
+  animation: floatSlow 5.5s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spinSlow 9s linear infinite;
+}
+
+.text-gold-gradient {
+  background: linear-gradient(
+    120deg,
+    var(--studio-heading, #f6e1a8) 0%,
+    var(--studio-primary, #e8c574) 55%,
+    var(--studio-secondary, #cbb4ec) 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.gold-shimmer-btn {
+  background: linear-gradient(
+    110deg,
+    var(--studio-btn-bg, #d7ae52) 0%,
+    var(--studio-btn-bg-2, #f6e1a8) 50%,
+    var(--studio-btn-bg, #c89a38) 100%
+  );
+  color: var(--studio-btn-text, #140724);
+  background-size: 200% auto;
+  transition: background-position 0.5s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease;
+}
+
+.gold-shimmer-btn:hover {
+  background-position: right center;
+  box-shadow: 0 12px 32px -6px var(--studio-glow-soft, rgba(232, 197, 116, 0.45));
+}
+
+.luxury-panel {
+  background: var(--studio-panel-bg, rgba(27, 11, 46, 0.72));
+  border: 1px solid var(--studio-border, rgba(232, 197, 116, 0.24));
+  box-shadow: var(--studio-shadow, 0 24px 64px -16px rgba(5, 2, 12, 0.75));
+}
+
+.eq-bar {
+  transform-origin: bottom;
+  animation: eqBar 0.9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float-slow,
+  .animate-spin-slow,
+  .eq-bar {
+    animation: none !important;
+  }
+}

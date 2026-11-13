@@ -1,0 +1,466 @@
+import { useEffect, useRef, useState } from 'react';
+import { AmbientBackdrop } from './components/AmbientBackdrop';
+import {
+  MessageEditorCard,
+  RecipientInfoCard,
+  VideoSettingsCard,
+} from './components/studio/MessagesAndSettingsCards';
+import { MusicStudioCard } from './components/studio/MusicStudioCard';
+import { PhotoManagerCard } from './components/studio/PhotoManagerCard';
+import { StudioHeader } from './components/studio/StudioHeader';
+import { ThemeAppearanceStudioCard } from './components/studio/ThemeAppearanceStudioCard';
+import { VideoPreviewAndExport } from './components/studio/VideoPreviewAndExport';
+import {
+  DEFAULT_PROJECT_CONFIG,
+  PLATFORM_PRESETS,
+  PlatformId,
+  RenderedVideoResult,
+  resolveVideoDimensions,
+  StudioProjectConfig,
+} from './types';
+import {
+  DEFAULT_VIDEO_THEME,
+  DEFAULT_WEBSITE_THEME,
+  VideoThemeConfig,
+  WebsiteThemeConfig,
+} from './types/theme';
+import { applyWebsiteThemeToDocument } from './utils/applyWebsiteTheme';
+import {
+  loadCustomVideoThemes,
+  loadCustomWebsiteThemes,
+  loadStudioProject,
+  loadWebsiteTheme,
+  loadWebsiteThemeSync,
+  resetStudioProject,
+  saveCustomVideoThemes,
+  saveCustomWebsiteThemes,
+  saveStudioProject,
+  saveWebsiteTheme,
+} from './utils/storage';
+import {
+  renderBirthdayVideo,
+  VideoExportProgress,
+} from './utils/videoExporter';
+
+export default function App() {
+  const [config, setConfig] = useState<StudioProjectConfig>(
+    DEFAULT_PROJECT_CONFIG,
+  );
+  const [websiteTheme, setWebsiteTheme] = useState<WebsiteThemeConfig>(() =>
+    loadWebsiteThemeSync(),
+  );
+  const [customWebsiteThemes, setCustomWebsiteThemes] = useState<
+    WebsiteThemeConfig[]
+  >([]);
+  const [customVideoThemes, setCustomVideoThemes] = useState<
+    VideoThemeConfig[]
+  >([]);
+  const [hydrated, setHydrated] = useState(false);
+
+  const [isRendering, setIsRendering] = useState(false);
+  const [renderProgress, setRenderProgress] =
+    useState<VideoExportProgress | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [renderedVideo, setRenderedVideo] =
+    useState<RenderedVideoResult | null>(null);
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const monitorRef = useRef<HTMLDivElement | null>(null);
+
+  // Apply website theme immediately on mount and on every websiteTheme change
+  useEffect(() => {
+    applyWebsiteThemeToDocument(websiteTheme);
+  }, [websiteTheme]);
+
+  // Hydrate saved project + independent themes on mount
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      loadStudioProject(),
+      loadWebsiteTheme(),
+      loadCustomWebsiteThemes(),
+      loadCustomVideoThemes(),
+    ]).then(([loadedProj, loadedWebTheme, savedWebList, savedVidList]) => {
+      if (!active) return;
+      setConfig(loadedProj);
+      setWebsiteTheme(loadedWebTheme);
+      setCustomWebsiteThemes(savedWebList);
+      setCustomVideoThemes(savedVidList);
+      setHydrated(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Persist project changes after hydration
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = window.setTimeout(() => {
+      void saveStudioProject(config);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [config, hydrated]);
+
+  // Persist website theme changes independently after hydration
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = window.setTimeout(() => {
+      void saveWebsiteTheme(websiteTheme);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [websiteTheme, hydrated]);
+
+  // Persist custom theme libraries
+  useEffect(() => {
+    if (!hydrated) return;
+    void saveCustomWebsiteThemes(customWebsiteThemes);
+  }, [customWebsiteThemes, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void saveCustomVideoThemes(customVideoThemes);
+  }, [customVideoThemes, hydrated]);
+
+  // Revoke previous rendered video ObjectURL on replacement or unmount
+  useEffect(() => {
+    return () => {
+      if (renderedVideo?.url) {
+        URL.revokeObjectURL(renderedVideo.url);
+      }
+    };
+  }, [renderedVideo]);
+
+  const invalidateRenderedVideo = () => {
+    if (renderedVideo) {
+      URL.revokeObjectURL(renderedVideo.url);
+      setRenderedVideo(null);
+    }
+  };
+
+  const handleRecipientNameChange = (nextName: string) => {
+    setConfig((prev) => {
+      const prevDefaultHeadline = `HAPPY BIRTHDAY, ${prev.recipientName.trim().toUpperCase()}!`;
+      const isUsingDefaultHeadline =
+        prev.messages.announcementHeadline.trim().toUpperCase() ===
+          prevDefaultHeadline ||
+        prev.messages.announcementHeadline.trim() === '';
+
+      const nextHeadline = isUsingDefaultHeadline
+        ? `HAPPY BIRTHDAY, ${(nextName.trim() || 'FRIEND').toUpperCase()}!`
+        : prev.messages.announcementHeadline;
+
+      return {
+        ...prev,
+        recipientName: nextName,
+        messages: {
+          ...prev.messages,
+          announcementHeadline: nextHeadline,
+        },
+      };
+    });
+  };
+
+  const handleSelectPlatform = (platformId: PlatformId) => {
+    invalidateRenderedVideo();
+    const matched = PLATFORM_PRESETS.find((p) => p.id === platformId);
+    setConfig((prev) => ({
+      ...prev,
+      platformId,
+      aspectRatio: matched ? matched.aspectRatio : prev.aspectRatio,
+    }));
+  };
+
+  const handleChangeVideoTheme = (nextVideoTheme: VideoThemeConfig) => {
+    invalidateRenderedVideo();
+    setConfig((prev) => ({
+      ...prev,
+      videoTheme: nextVideoTheme,
+    }));
+  };
+
+  const handleSaveCustomWebsiteTheme = (name: string) => {
+    const entry: WebsiteThemeConfig = {
+      ...websiteTheme,
+      id: `custom-web-${Date.now()}`,
+      name,
+      isCustom: true,
+    };
+    setCustomWebsiteThemes((prev) => [entry, ...prev]);
+    setWebsiteTheme(entry);
+  };
+
+  const handleSaveCustomVideoTheme = (name: string) => {
+    const entry: VideoThemeConfig = {
+      ...config.videoTheme,
+      id: `custom-vid-${Date.now()}`,
+      name,
+      isCustom: true,
+    };
+    setCustomVideoThemes((prev) => [entry, ...prev]);
+    handleChangeVideoTheme(entry);
+  };
+
+  const handleRenameCustomWebsiteTheme = (id: string, name: string) => {
+    setCustomWebsiteThemes((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, name } : t)),
+    );
+    if (websiteTheme.id === id) {
+      setWebsiteTheme((prev) => ({ ...prev, name }));
+    }
+  };
+
+  const handleRenameCustomVideoTheme = (id: string, name: string) => {
+    setCustomVideoThemes((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, name } : t)),
+    );
+    if (config.videoTheme.id === id) {
+      handleChangeVideoTheme({ ...config.videoTheme, name });
+    }
+  };
+
+  const handleDuplicateCustomWebsiteTheme = (src: WebsiteThemeConfig) => {
+    const copy: WebsiteThemeConfig = {
+      ...src,
+      id: `custom-web-${Date.now()}`,
+      name: `${src.name} Copy`,
+      isCustom: true,
+    };
+    setCustomWebsiteThemes((prev) => [copy, ...prev]);
+  };
+
+  const handleDuplicateCustomVideoTheme = (src: VideoThemeConfig) => {
+    const copy: VideoThemeConfig = {
+      ...src,
+      id: `custom-vid-${Date.now()}`,
+      name: `${src.name} Copy`,
+      isCustom: true,
+    };
+    setCustomVideoThemes((prev) => [copy, ...prev]);
+  };
+
+  const handleJumpTo = (sectionId: string) => {
+    const el = document.getElementById(sectionId);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const handleStartRender = async () => {
+    if (isRendering) return;
+
+    monitorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    invalidateRenderedVideo();
+
+    setRenderError(null);
+    setIsRendering(true);
+    setRenderProgress({
+      progress: 0,
+      currentTime: 0,
+      totalTime: config.durationSeconds,
+      sceneLabel: 'Preparing Studio Assets',
+    });
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      const result = await renderBirthdayVideo(
+        config,
+        (prog) => setRenderProgress(prog),
+        controller.signal,
+      );
+      setRenderedVideo(result);
+    } catch (err) {
+      if ((err as DOMException)?.name !== 'AbortError') {
+        setRenderError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to render video in this browser.',
+        );
+      }
+    } finally {
+      setIsRendering(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleCancelRender = () => {
+    abortControllerRef.current?.abort();
+  };
+
+  const handleResetProject = () => {
+    if (isRendering) {
+      abortControllerRef.current?.abort();
+    }
+    invalidateRenderedVideo();
+    setRenderError(null);
+    setConfig(DEFAULT_PROJECT_CONFIG);
+    setWebsiteTheme(DEFAULT_WEBSITE_THEME);
+    void resetStudioProject();
+    void saveWebsiteTheme(DEFAULT_WEBSITE_THEME);
+  };
+
+  const videoDimensions = resolveVideoDimensions(config);
+
+  return (
+    <div
+      id="top"
+      className="relative min-h-screen w-full overflow-x-hidden bg-[var(--studio-bg)] text-[var(--studio-text)]"
+    >
+      <AmbientBackdrop showBalloons={false} theme={websiteTheme} />
+
+      <StudioHeader
+        onJumpTo={handleJumpTo}
+        onResetProject={handleResetProject}
+        onGenerateClick={handleStartRender}
+        isRendering={isRendering}
+      />
+
+      <main className="relative z-10 max-w-[1440px] mx-auto px-4 sm:px-8 pt-6 pb-16">
+        {/* Studio Hero Banner */}
+        <div className="mb-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-[var(--studio-border-soft)] pb-6">
+          <div>
+            <p className="text-xs font-medium tracking-[0.22em] uppercase text-[var(--studio-primary)]">
+              Admin Video Production Suite
+            </p>
+            <h1 className="mt-1.5 text-3xl sm:text-5xl font-semibold tracking-tight text-gold-gradient leading-[1.08]">
+              MAGICAL BIRTHDAY STUDIO
+            </h1>
+            <p className="mt-2 text-sm sm:text-base text-[var(--studio-muted)]">
+              Create unforgettable birthday memories.
+            </p>
+          </div>
+
+          <p className="text-xs sm:text-sm text-[var(--studio-muted)] tabular-nums">
+            Ready to export for WhatsApp Status · TikTok · Reels · YouTube · Custom
+          </p>
+        </div>
+
+        {/* Two-Pane Studio Workspace */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Left Editor Column */}
+          <div className="lg:col-span-7 space-y-6">
+            <RecipientInfoCard
+              recipientName={config.recipientName}
+              birthdayDate={config.birthdayDate}
+              personalGreeting={config.personalGreeting}
+              onChangeName={handleRecipientNameChange}
+              onChangeDate={(birthdayDate) =>
+                setConfig((prev) => ({ ...prev, birthdayDate }))
+              }
+              onChangeGreeting={(personalGreeting) =>
+                setConfig((prev) => ({ ...prev, personalGreeting }))
+              }
+            />
+
+            <PhotoManagerCard
+              photos={config.photos}
+              openingPhotoId={config.openingPhotoId}
+              finalPhotoId={config.finalPhotoId}
+              videoTheme={config.videoTheme}
+              videoDimensions={videoDimensions}
+              onChangePhotos={(photos) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => {
+                  const hasOpening = photos.some(
+                    (p) => p.id === prev.openingPhotoId,
+                  );
+                  const hasFinal = photos.some(
+                    (p) => p.id === prev.finalPhotoId,
+                  );
+                  return {
+                    ...prev,
+                    photos,
+                    openingPhotoId: hasOpening
+                      ? prev.openingPhotoId
+                      : (photos[0]?.id ?? null),
+                    finalPhotoId: hasFinal
+                      ? prev.finalPhotoId
+                      : (photos[photos.length - 1]?.id ?? null),
+                  };
+                });
+              }}
+              onSelectOpening={(openingPhotoId) =>
+                setConfig((prev) => ({ ...prev, openingPhotoId }))
+              }
+              onSelectFinal={(finalPhotoId) =>
+                setConfig((prev) => ({ ...prev, finalPhotoId }))
+              }
+            />
+
+            <MusicStudioCard
+              music={config.music}
+              onChangeMusic={(music) =>
+                setConfig((prev) => ({ ...prev, music }))
+              }
+            />
+
+            <ThemeAppearanceStudioCard
+              websiteTheme={websiteTheme}
+              videoTheme={config.videoTheme}
+              customWebsiteThemes={customWebsiteThemes}
+              customVideoThemes={customVideoThemes}
+              projectConfig={config}
+              onChangeWebsiteTheme={setWebsiteTheme}
+              onChangeVideoTheme={handleChangeVideoTheme}
+              onSaveCustomWebsiteTheme={handleSaveCustomWebsiteTheme}
+              onSaveCustomVideoTheme={handleSaveCustomVideoTheme}
+              onRenameCustomWebsiteTheme={handleRenameCustomWebsiteTheme}
+              onRenameCustomVideoTheme={handleRenameCustomVideoTheme}
+              onDeleteCustomWebsiteTheme={(id) =>
+                setCustomWebsiteThemes((prev) => prev.filter((t) => t.id !== id))
+              }
+              onDeleteCustomVideoTheme={(id) =>
+                setCustomVideoThemes((prev) => prev.filter((t) => t.id !== id))
+              }
+              onDuplicateCustomWebsiteTheme={handleDuplicateCustomWebsiteTheme}
+              onDuplicateCustomVideoTheme={handleDuplicateCustomVideoTheme}
+              onResetWebsiteTheme={() => setWebsiteTheme(DEFAULT_WEBSITE_THEME)}
+              onResetVideoTheme={() =>
+                handleChangeVideoTheme(DEFAULT_VIDEO_THEME)
+              }
+            />
+
+            <MessageEditorCard
+              messages={config.messages}
+              onChangeMessages={(messages) =>
+                setConfig((prev) => ({ ...prev, messages }))
+              }
+            />
+
+            <VideoSettingsCard
+              platformId={config.platformId}
+              customAspect={config.customAspect}
+              durationSeconds={config.durationSeconds}
+              onSelectPlatform={handleSelectPlatform}
+              onChangeCustomAspect={(customAspect) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, customAspect }));
+              }}
+              onChangeDuration={(durationSeconds) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, durationSeconds }));
+              }}
+            />
+          </div>
+
+          {/* Right Sticky Preview & Export Column */}
+          <div ref={monitorRef} className="lg:col-span-5 lg:sticky lg:top-20">
+            <VideoPreviewAndExport
+              config={config}
+              isRendering={isRendering}
+              renderProgress={renderProgress}
+              renderError={renderError}
+              renderedVideo={renderedVideo}
+              onStartRender={handleStartRender}
+              onCancelRender={handleCancelRender}
+              onClearRenderedVideo={invalidateRenderedVideo}
+            />
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
