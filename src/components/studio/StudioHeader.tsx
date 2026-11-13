@@ -9,9 +9,9 @@ interface StudioHeaderProps {
 
 const SECTIONS = [
   { id: 'section-recipient', label: 'Recipient' },
-  { id: 'section-photos', label: 'Photos' },
-  { id: 'section-music', label: 'Music' },
-  { id: 'section-themes', label: 'Themes' },
+  { id: 'section-calendar-cake', label: 'Calendar & Cake' },
+  { id: 'section-music', label: 'Music & Sync' },
+  { id: 'section-messages', label: 'Wishes & Text' },
   { id: 'section-settings', label: 'Format' },
 ];
 

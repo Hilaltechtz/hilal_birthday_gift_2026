@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AmbientBackdrop } from './components/AmbientBackdrop';
+import { CalendarAndCakeStudioCard } from './components/studio/CalendarAndCakeStudioCard';
 import {
   MessageEditorCard,
   RecipientInfoCard,
@@ -8,6 +9,7 @@ import {
 import { MusicStudioCard } from './components/studio/MusicStudioCard';
 import { PhotoManagerCard } from './components/studio/PhotoManagerCard';
 import { StudioHeader } from './components/studio/StudioHeader';
+import { TextAnimationEditorCard } from './components/studio/TextAnimationEditorCard';
 import { ThemeAppearanceStudioCard } from './components/studio/ThemeAppearanceStudioCard';
 import { VideoPreviewAndExport } from './components/studio/VideoPreviewAndExport';
 import {
@@ -25,6 +27,11 @@ import {
   WebsiteThemeConfig,
 } from './types/theme';
 import { applyWebsiteThemeToDocument } from './utils/applyWebsiteTheme';
+import {
+  clampDayToMonth,
+  formatBirthdayLabel,
+  normalizeMonth,
+} from './utils/calendarDateUtils';
 import {
   loadCustomVideoThemes,
   loadCustomWebsiteThemes,
@@ -159,6 +166,24 @@ export default function App() {
         },
       };
     });
+  };
+
+  const handleBirthdayPartsChange = (
+    month: number,
+    day: number,
+    year: number | null,
+  ) => {
+    invalidateRenderedVideo();
+    const safeMonth = normalizeMonth(month);
+    const safeDay = clampDayToMonth(safeMonth, day, year);
+    const formatted = formatBirthdayLabel(safeMonth, safeDay, year);
+    setConfig((prev) => ({
+      ...prev,
+      birthdayMonth: safeMonth,
+      birthdayDay: safeDay,
+      birthdayYear: year,
+      birthdayDate: formatted,
+    }));
   };
 
   const handleSelectPlatform = (platformId: PlatformId) => {
@@ -344,15 +369,31 @@ export default function App() {
           <div className="lg:col-span-7 space-y-6">
             <RecipientInfoCard
               recipientName={config.recipientName}
-              birthdayDate={config.birthdayDate}
+              birthdayMonth={config.birthdayMonth}
+              birthdayDay={config.birthdayDay}
+              birthdayYear={config.birthdayYear}
               personalGreeting={config.personalGreeting}
-              onChangeName={handleRecipientNameChange}
-              onChangeDate={(birthdayDate) =>
-                setConfig((prev) => ({ ...prev, birthdayDate }))
-              }
-              onChangeGreeting={(personalGreeting) =>
-                setConfig((prev) => ({ ...prev, personalGreeting }))
-              }
+              onChangeName={(nextName) => {
+                invalidateRenderedVideo();
+                handleRecipientNameChange(nextName);
+              }}
+              onChangeBirthdayParts={handleBirthdayPartsChange}
+              onChangeGreeting={(personalGreeting) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, personalGreeting }));
+              }}
+            />
+
+            <CalendarAndCakeStudioCard
+              config={config}
+              onChangeCalendarConfig={(calendarConfig) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, calendarConfig }));
+              }}
+              onChangeCakeConfig={(cakeConfig) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, cakeConfig }));
+              }}
             />
 
             <PhotoManagerCard
@@ -391,10 +432,19 @@ export default function App() {
             />
 
             <MusicStudioCard
-              music={config.music}
-              onChangeMusic={(music) =>
-                setConfig((prev) => ({ ...prev, music }))
-              }
+              config={config}
+              onChangeMusic={(music) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, music }));
+              }}
+              onChangeBeatSync={(beatSync) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, beatSync }));
+              }}
+              onChangeMessages={(messages) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, messages }));
+              }}
             />
 
             <ThemeAppearanceStudioCard
@@ -425,9 +475,22 @@ export default function App() {
 
             <MessageEditorCard
               messages={config.messages}
-              onChangeMessages={(messages) =>
-                setConfig((prev) => ({ ...prev, messages }))
-              }
+              onChangeMessages={(messages) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, messages }));
+              }}
+            />
+
+            <TextAnimationEditorCard
+              config={config}
+              onChangeMessages={(messages) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, messages }));
+              }}
+              onChangeFontColors={(fontColors) => {
+                invalidateRenderedVideo();
+                setConfig((prev) => ({ ...prev, fontColors }));
+              }}
             />
 
             <VideoSettingsCard

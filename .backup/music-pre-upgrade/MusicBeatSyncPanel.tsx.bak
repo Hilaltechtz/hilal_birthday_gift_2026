@@ -1,0 +1,732 @@
+import {
+  Activity,
+  MoveHorizontal,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react';
+import {
+  PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  BeatSyncMode,
+  DEFAULT_WISH_ANIMATION_PRESETS,
+  MusicBeatMarker,
+  resolveVideoScenes,
+  StudioMessages,
+  StudioMusic,
+  StudioProjectConfig,
+} from '../../types';
+import { analyzeUploadedMusic } from '../../utils/audioAnalyzer';
+import {
+  computeBeatAlignedSchedule,
+  resolveVideoTimelineBeats,
+} from '../../utils/beatSyncEngine';
+
+interface MusicBeatSyncPanelProps {
+  config: StudioProjectConfig;
+  onChangeMusic: (next: StudioMusic | null) => void;
+  onChangeBeatSync: (next: StudioProjectConfig['beatSync']) => void;
+  onChangeMessages: (next: StudioMessages) => void;
+}
+
+type TimelineTool = 'select-drag' | 'add-beat' | 'remove-beat';
+
+export function MusicBeatSyncPanel({
+  config,
+  onChangeMusic,
+  onChangeBeatSync,
+  onChangeMessages,
+}: MusicBeatSyncPanelProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [tool, setTool] = useState<TimelineTool>('select-drag');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playheadSec, setPlayheadSec] = useState(0);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
+  const [draggingMarkerId, setDraggingMarkerId] = useState<string | null>(null);
+
+  const duration = Math.max(1, config.durationSeconds);
+  const beatSync = config.beatSync;
+  const scenes = useMemo(() => resolveVideoScenes(config), [config]);
+  const schedule = useMemo(() => computeBeatAlignedSchedule(config), [config]);
+  const beats = useMemo(() => resolveVideoTimelineBeats(config), [config]);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  // Clamp playhead when video duration changes
+  useEffect(() => {
+    if (playheadSec > duration) {
+      setPlayheadSec(0);
+    }
+  }, [duration, playheadSec]);
+
+  // Real-time timeline playhead loop when playing MP3 on timeline
+  useEffect(() => {
+    if (!isPlaying || !config.music?.dataUrl) return;
+    const offset = config.music.startOffsetSeconds || 0;
+    const trackLen = Math.max(1, config.music.durationSeconds || 30);
+
+    let rafId = 0;
+    const tick = () => {
+      const el = audioRef.current;
+      if (el && !el.paused) {
+        const movieTime = (el.currentTime - offset + trackLen) % trackLen;
+        if (movieTime >= duration) {
+          el.pause();
+          setIsPlaying(false);
+          setPlayheadSec(0);
+          return;
+        }
+        setPlayheadSec(movieTime);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying, config.music?.dataUrl, config.music?.startOffsetSeconds, config.music?.durationSeconds, duration]);
+
+  const toggleTimelineAudio = () => {
+    if (!config.music?.dataUrl) return;
+    if (isPlaying && audioRef.current) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+      return;
+    }
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    const el = new Audio(config.music.dataUrl);
+    const offset = config.music.startOffsetSeconds || 0;
+    const trackLen = Math.max(1, config.music.durationSeconds || 30);
+    el.currentTime = (offset + playheadSec) % trackLen;
+    el.volume = config.music.volume;
+    el.onended = () => setIsPlaying(false);
+    audioRef.current = el;
+    void el
+      .play()
+      .then(() => setIsPlaying(true))
+      .catch(() => setIsPlaying(false));
+  };
+
+  const handleReanalyzeBeats = async () => {
+    if (!config.music?.dataUrl) return;
+    setIsReanalyzing(true);
+    try {
+      const res = await analyzeUploadedMusic(
+        config.music.dataUrl,
+        beatSync.sensitivity,
+      );
+      onChangeMusic({
+        ...config.music,
+        bpm: res.bpm,
+        waveformPeaks: res.waveformPeaks,
+        detectedBeats: res.detectedBeats,
+      });
+      onChangeBeatSync({
+        ...beatSync,
+        removedDetectedBeatIds: [],
+        editedDetectedBeats: {},
+      });
+    } finally {
+      setIsReanalyzing(false);
+    }
+  };
+
+  // Paint integrated Music Waveform + Beat Markers + Video Scenes + Text Cues canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background tracks
+    ctx.fillStyle = '#0D061A';
+    ctx.fillRect(0, 0, w, h);
+
+    const waveTop = 10;
+    const waveH = 74;
+    const sceneTop = 94;
+    const sceneH = 32;
+    const textTop = 134;
+    const textH = 54;
+
+    // 1. Amplitude Waveform across active video slice [startOffset .. startOffset + duration]
+    const peaks =
+      config.music?.waveformPeaks && config.music.waveformPeaks.length > 0
+        ? config.music.waveformPeaks
+        : Array.from({ length: 120 }, (_, i) => 0.25 + 0.35 * Math.abs(Math.sin(i * 0.28)));
+    const trackLen = Math.max(1, config.music?.durationSeconds || duration);
+    const offset = config.music?.startOffsetSeconds || 0;
+
+    const barCount = 120;
+    const barW = w / barCount;
+    for (let i = 0; i < barCount; i++) {
+      const movieT = (i / barCount) * duration;
+      const trackFrac = (((offset + movieT) % trackLen) + trackLen) % trackLen / trackLen;
+      const peakIdx = Math.min(peaks.length - 1, Math.floor(trackFrac * peaks.length));
+      const amp = peaks[peakIdx] || 0.2;
+      const bh = Math.max(4, amp * waveH * 0.88);
+      const bx = i * barW;
+      const by = waveTop + (waveH - bh) * 0.5;
+      ctx.fillStyle =
+        movieT <= playheadSec
+          ? 'rgba(232, 197, 116, 0.85)'
+          : 'rgba(167, 139, 250, 0.42)';
+      ctx.fillRect(bx + 1, by, Math.max(2, barW - 2), bh);
+    }
+
+    // 2. Beat Markers (Gold = Auto Detected, Cyan/Pink = Manual User Markers)
+    beats.forEach((b) => {
+      const x = (b.timeSec / duration) * w;
+      const isStrong = b.strength >= 0.72;
+      ctx.strokeStyle = b.isManual
+        ? '#F472B6'
+        : isStrong
+          ? '#FDE047'
+          : 'rgba(253, 224, 71, 0.48)';
+      ctx.lineWidth = b.isManual ? 2.2 : isStrong ? 1.8 : 1;
+      ctx.beginPath();
+      ctx.moveTo(x, waveTop);
+      ctx.lineTo(x, waveTop + waveH);
+      ctx.stroke();
+
+      // Marker diamond badge at top edge
+      if (b.isManual || isStrong) {
+        ctx.fillStyle = b.isManual ? '#F472B6' : '#FDE047';
+        ctx.beginPath();
+        ctx.moveTo(x, waveTop + 1);
+        ctx.lineTo(x + 5, waveTop + 6);
+        ctx.lineTo(x, waveTop + 11);
+        ctx.lineTo(x - 5, waveTop + 6);
+        ctx.closePath();
+        ctx.fill();
+      }
+    });
+
+    // 3. Video Scene Blocks (Calendar, Intro, Birthday, Memories, Cake, Wishes, Finale)
+    scenes.forEach((sc, idx) => {
+      const x1 = sc.startFrac * w;
+      const sw = Math.max(12, (sc.endFrac - sc.startFrac) * w - 2);
+      ctx.fillStyle =
+        sc.id === 'wishes' || sc.id === 'surprise'
+          ? 'rgba(232, 197, 116, 0.22)'
+          : idx % 2 === 0
+            ? 'rgba(139, 92, 246, 0.22)'
+            : 'rgba(109, 40, 217, 0.22)';
+      ctx.fillRect(x1, sceneTop, sw, sceneH);
+      ctx.strokeStyle = 'rgba(232, 197, 116, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x1, sceneTop, sw, sceneH);
+
+      ctx.fillStyle = '#E9D5FF';
+      ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const shortLabel = sc.label.replace(/^\d+\.\s*/, '');
+      if (sw > 36) {
+        ctx.fillText(shortLabel, x1 + sw * 0.5, sceneTop + sceneH * 0.5);
+      }
+    });
+
+    // 4. Synchronized Text Cues (Wishes + Special Message + Sender Intro + Sender Name)
+    const cues = [
+      ...schedule.wishSegments.map((s) => ({ ...s, lane: 0, col: '#F7D97E' })),
+      { ...schedule.specialSegment, lane: 1, col: '#F472B6' },
+      { ...schedule.senderIntroSegment, lane: 0, col: '#C4B5FD' },
+      { ...schedule.senderNameSegment, lane: 1, col: '#FDE047' },
+    ];
+    cues.forEach((c) => {
+      const cx1 = (c.startSec / duration) * w;
+      const cw = Math.max(24, ((c.endSec - c.startSec) / duration) * w - 2);
+      const cy = textTop + (c.lane === 0 ? 2 : 28);
+      ctx.fillStyle = `${c.col}33`;
+      ctx.fillRect(cx1, cy, cw, 22);
+      ctx.strokeStyle = c.col;
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(cx1, cy, cw, 22);
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(c.label, cx1 + 5, cy + 11, cw - 8);
+    });
+
+    // 5. Playhead Vertical Line
+    const phX = (playheadSec / duration) * w;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(phX, 0);
+    ctx.lineTo(phX, textTop + textH);
+    ctx.stroke();
+
+    // Time ticks along bottom axis
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = '500 10px monospace';
+    ctx.textAlign = 'center';
+    const step = duration <= 15 ? 3 : 5;
+    for (let sec = 0; sec <= duration; sec += step) {
+      const tx = (sec / duration) * w;
+      ctx.fillText(`${sec}s`, Math.max(12, Math.min(w - 14, tx)), h - 8);
+    }
+  }, [config.music, beats, scenes, schedule, duration, playheadSec]);
+
+  const timeFromPointer = (e: ReactPointerEvent<HTMLCanvasElement>): number => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    return Number((frac * duration).toFixed(2));
+  };
+
+  const findNearestBeat = (timeSec: number, tolSec = 0.65): MusicBeatMarker | null => {
+    let best: MusicBeatMarker | null = null;
+    let bestDist = Infinity;
+    for (const b of beats) {
+      const d = Math.abs(b.timeSec - timeSec);
+      if (d <= tolSec && d < bestDist) {
+        bestDist = d;
+        best = b;
+      }
+    }
+    return best;
+  };
+
+  const handleCanvasPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    const clickedTime = timeFromPointer(e);
+
+    if (tool === 'add-beat') {
+      const newMarker: MusicBeatMarker = {
+        id: `manual-${Date.now()}`,
+        timeSec: clickedTime,
+        strength: 0.95,
+        isManual: true,
+      };
+      onChangeBeatSync({
+        ...beatSync,
+        manualMarkers: [...beatSync.manualMarkers, newMarker],
+      });
+      setPlayheadSec(clickedTime);
+      return;
+    }
+
+    if (tool === 'remove-beat') {
+      const hit = findNearestBeat(clickedTime, 0.8);
+      if (!hit) return;
+      if (hit.isManual) {
+        onChangeBeatSync({
+          ...beatSync,
+          manualMarkers: beatSync.manualMarkers.filter((m) => m.id !== hit.id),
+        });
+      } else {
+        const baseId = hit.id.replace(/-loop\d+$/, '');
+        onChangeBeatSync({
+          ...beatSync,
+          removedDetectedBeatIds: [...beatSync.removedDetectedBeatIds, baseId],
+        });
+      }
+      return;
+    }
+
+    // select-drag: drag marker if close, otherwise move playhead
+    const hit = findNearestBeat(clickedTime, 0.45);
+    if (hit) {
+      setDraggingMarkerId(hit.id);
+      e.currentTarget.setPointerCapture(e.pointerId);
+    }
+    setPlayheadSec(clickedTime);
+  };
+
+  const handleCanvasPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!draggingMarkerId) return;
+    const tSec = timeFromPointer(e);
+    setPlayheadSec(tSec);
+
+    const isManual = beatSync.manualMarkers.some((m) => m.id === draggingMarkerId);
+    if (isManual) {
+      onChangeBeatSync({
+        ...beatSync,
+        manualMarkers: beatSync.manualMarkers.map((m) =>
+          m.id === draggingMarkerId ? { ...m, timeSec: tSec } : m,
+        ),
+      });
+    } else if (config.music?.detectedBeats) {
+      const baseId = draggingMarkerId.replace(/-loop\d+$/, '');
+      const offset = config.music.startOffsetSeconds || 0;
+      const trackTime = Number(((tSec + offset) % Math.max(1, config.music.durationSeconds || 30)).toFixed(3));
+      onChangeBeatSync({
+        ...beatSync,
+        editedDetectedBeats: {
+          ...beatSync.editedDetectedBeats,
+          [baseId]: trackTime,
+        },
+      });
+    }
+  };
+
+  const handleCanvasPointerUp = () => {
+    setDraggingMarkerId(null);
+  };
+
+  const setManualStartForWish = (wishIdx: number, startSec: number | null) => {
+    const nextAnims = config.messages.wishes.map((_, idx) => {
+      const fallback =
+        DEFAULT_WISH_ANIMATION_PRESETS[idx % DEFAULT_WISH_ANIMATION_PRESETS.length];
+      const existing = { ...fallback, ...(config.messages.wishAnimations?.[idx] || {}) };
+      if (idx === wishIdx) {
+        return { ...existing, manualStartSec: startSec };
+      }
+      return existing;
+    });
+    onChangeMessages({ ...config.messages, wishAnimations: nextAnims });
+  };
+
+  return (
+    <div className="mt-5 rounded-xl border border-[var(--studio-border)] bg-[var(--studio-subcard)] p-4 space-y-4">
+      {/* Header + Sync Mode Switch */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold text-[var(--studio-heading)] inline-flex items-center gap-1.5">
+            <Activity className="h-3.5 w-3.5 text-[var(--studio-primary)]" />
+            <span>Music Beat Sync &amp; Integrated Timeline Editor</span>
+          </p>
+          <p className="text-[11px] text-[var(--studio-muted)] tabular-nums">
+            {beats.length} active beats ({beatSync.manualMarkers.length} manual) ·{' '}
+            {config.music ? `${config.music.bpm || 96} BPM MP3` : '96 BPM Score'}
+          </p>
+        </div>
+
+        <div className="inline-flex rounded-lg border border-[var(--studio-border)] bg-[var(--studio-input)] p-0.5">
+          {(
+            [
+              { id: 'auto', label: 'Auto Sync to Music' },
+              { id: 'manual', label: 'Manual Sync' },
+              { id: 'off', label: 'Unlinked' },
+            ] as { id: BeatSyncMode; label: string }[]
+          ).map((m) => {
+            const active = beatSync.mode === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => onChangeBeatSync({ ...beatSync, mode: m.id })}
+                className={`px-2.5 py-1.5 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--studio-btn-bg)] text-[var(--studio-btn-text)]'
+                    : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+                }`}
+              >
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Waveform + Beats + Video Scenes + Text Cues Canvas */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {config.music && (
+              <button
+                type="button"
+                onClick={toggleTimelineAudio}
+                className="h-8 px-3 rounded-lg bg-[var(--studio-btn-bg)] text-[var(--studio-btn-text)] text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                {isPlaying ? (
+                  <>
+                    <Pause className="h-3.5 w-3.5" />
+                    <span>Pause</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Play Waveform</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setTool('select-drag')}
+              className={`h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1 cursor-pointer ${
+                tool === 'select-drag'
+                  ? 'border-[var(--studio-primary)] bg-[var(--studio-active-tile)] text-[var(--studio-heading)]'
+                  : 'border-[var(--studio-border-soft)] bg-[var(--studio-input)] text-[var(--studio-muted)]'
+              }`}
+            >
+              <MoveHorizontal className="h-3 w-3" />
+              <span>Drag Beats</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTool('add-beat')}
+              className={`h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1 cursor-pointer ${
+                tool === 'add-beat'
+                  ? 'border-[var(--studio-primary)] bg-[var(--studio-active-tile)] text-[var(--studio-heading)]'
+                  : 'border-[var(--studio-border-soft)] bg-[var(--studio-input)] text-[var(--studio-muted)]'
+              }`}
+            >
+              <Plus className="h-3 w-3" />
+              <span>Add Manual Beat</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTool('remove-beat')}
+              className={`h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1 cursor-pointer ${
+                tool === 'remove-beat'
+                  ? 'border-[var(--studio-accent)] bg-[var(--studio-active-tile)] text-[var(--studio-accent)]'
+                  : 'border-[var(--studio-border-soft)] bg-[var(--studio-input)] text-[var(--studio-muted)]'
+              }`}
+            >
+              <Trash2 className="h-3 w-3" />
+              <span>Remove Beat</span>
+            </button>
+          </div>
+
+          <span className="text-[11px] font-mono tabular-nums text-[var(--studio-muted)]">
+            Cursor: {playheadSec.toFixed(2)}s / {duration}s
+          </span>
+        </div>
+
+        <div className="w-full overflow-hidden rounded-lg border border-[var(--studio-border)] bg-[#0D061A]">
+          <canvas
+            ref={canvasRef}
+            width={920}
+            height={212}
+            onPointerDown={handleCanvasPointerDown}
+            onPointerMove={handleCanvasPointerMove}
+            onPointerUp={handleCanvasPointerUp}
+            onPointerCancel={handleCanvasPointerUp}
+            className={`w-full h-auto block ${
+              tool === 'add-beat'
+                ? 'cursor-crosshair'
+                : tool === 'remove-beat'
+                  ? 'cursor-not-allowed'
+                  : 'cursor-ew-resize'
+            }`}
+          />
+        </div>
+      </div>
+
+      {/* Beat Sensitivity + Scene Snap + Re-Analyze */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+        <div className="rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-input)] p-3 flex items-center justify-between gap-3">
+          <div className="flex-1">
+            <div className="flex items-center justify-between text-[11px] mb-1">
+              <span className="text-[var(--studio-muted)]">Beat Sensitivity</span>
+              <span className="font-mono tabular-nums text-[var(--studio-primary)]">
+                {Math.round(beatSync.sensitivity * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0.3}
+              max={1.0}
+              step={0.05}
+              value={beatSync.sensitivity}
+              onChange={(e) =>
+                onChangeBeatSync({ ...beatSync, sensitivity: Number(e.target.value) })
+              }
+              className="w-full accent-[var(--studio-primary)] cursor-pointer"
+            />
+          </div>
+
+          {config.music && (
+            <button
+              type="button"
+              disabled={isReanalyzing}
+              onClick={handleReanalyzeBeats}
+              className="h-8 px-2.5 rounded-lg border border-[var(--studio-border)] bg-[var(--studio-subcard)] text-[11px] font-medium text-[var(--studio-primary)] inline-flex items-center gap-1 cursor-pointer shrink-0 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3 w-3 ${isReanalyzing ? 'animate-spin' : ''}`} />
+              <span>Re-detect</span>
+            </button>
+          )}
+        </div>
+
+        <label className="rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-input)] p-3 flex items-center justify-between gap-3 cursor-pointer">
+          <div>
+            <p className="text-xs font-medium text-[var(--studio-text)]">
+              Snap Scene &amp; Photo Transitions to Beats
+            </p>
+            <p className="text-[11px] text-[var(--studio-muted)]">
+              Locks photo cuts &amp; message entrances onto peak beats
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={beatSync.sceneBeatSnap}
+            onChange={(e) =>
+              onChangeBeatSync({ ...beatSync, sceneBeatSnap: e.target.checked })
+            }
+            className="h-4 w-4 accent-[var(--studio-primary)]"
+          />
+        </label>
+      </div>
+
+      {/* Manual Exact Appearance Timing Editor (active in Manual Mode OR shows synced times in Auto Mode) */}
+      <div className="pt-2 border-t border-[var(--studio-border-soft)] space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-[var(--studio-heading)]">
+            {beatSync.mode === 'manual'
+              ? 'Manual Message Appearance Cues (Exact Seconds)'
+              : 'Computed Beat-Synchronized Message Cues'}
+          </span>
+          {beatSync.manualMarkers.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onChangeBeatSync({ ...beatSync, manualMarkers: [] })}
+              className="text-[11px] text-[var(--studio-accent)] hover:underline cursor-pointer"
+            >
+              Clear Manual Beats
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {schedule.wishSegments.map((seg, idx) => (
+            <div
+              key={seg.id}
+              className="rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-input)] px-3 py-2 flex items-center justify-between gap-2"
+            >
+              <span className="text-xs font-medium text-[var(--studio-text)] truncate">
+                {seg.label}
+              </span>
+              {beatSync.mode === 'manual' ? (
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  max={duration}
+                  value={Number(seg.startSec.toFixed(1))}
+                  onChange={(e) =>
+                    setManualStartForWish(idx, Math.max(0, Math.min(duration, Number(e.target.value))))
+                  }
+                  aria-label={`${seg.label} start seconds`}
+                  className="w-16 h-7 rounded bg-[var(--studio-subcard)] border border-[var(--studio-border)] px-1.5 text-xs font-mono tabular-nums text-right text-[var(--studio-primary)]"
+                />
+              ) : (
+                <span className="text-[11px] font-mono tabular-nums text-[var(--studio-primary)]">
+                  {seg.startSec.toFixed(2)}s
+                </span>
+              )}
+            </div>
+          ))}
+
+          <div className="rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-input)] px-3 py-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-[var(--studio-text)] truncate">
+              Special Message
+            </span>
+            {beatSync.mode === 'manual' ? (
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={duration}
+                value={Number(schedule.specialSegment.startSec.toFixed(1))}
+                onChange={(e) =>
+                  onChangeMessages({
+                    ...config.messages,
+                    specialMessageAnimation: {
+                      ...config.messages.specialMessageAnimation,
+                      manualStartSec: Number(e.target.value),
+                    },
+                  })
+                }
+                aria-label="Special Message start seconds"
+                className="w-16 h-7 rounded bg-[var(--studio-subcard)] border border-[var(--studio-border)] px-1.5 text-xs font-mono tabular-nums text-right text-[var(--studio-primary)]"
+              />
+            ) : (
+              <span className="text-[11px] font-mono tabular-nums text-[var(--studio-primary)]">
+                {schedule.specialSegment.startSec.toFixed(2)}s
+              </span>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-input)] px-3 py-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-[var(--studio-text)] truncate">
+              Sender Prefix
+            </span>
+            {beatSync.mode === 'manual' ? (
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={duration}
+                value={Number(schedule.senderIntroSegment.startSec.toFixed(1))}
+                onChange={(e) =>
+                  onChangeMessages({
+                    ...config.messages,
+                    senderIntroAnimation: {
+                      ...config.messages.senderIntroAnimation,
+                      manualStartSec: Number(e.target.value),
+                    },
+                  })
+                }
+                aria-label="Sender Prefix start seconds"
+                className="w-16 h-7 rounded bg-[var(--studio-subcard)] border border-[var(--studio-border)] px-1.5 text-xs font-mono tabular-nums text-right text-[var(--studio-primary)]"
+              />
+            ) : (
+              <span className="text-[11px] font-mono tabular-nums text-[var(--studio-primary)]">
+                {schedule.senderIntroSegment.startSec.toFixed(2)}s
+              </span>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-input)] px-3 py-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-[var(--studio-text)] truncate">
+              Sender Name
+            </span>
+            {beatSync.mode === 'manual' ? (
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={duration}
+                value={Number(schedule.senderNameSegment.startSec.toFixed(1))}
+                onChange={(e) =>
+                  onChangeMessages({
+                    ...config.messages,
+                    senderNameAnimation: {
+                      ...config.messages.senderNameAnimation,
+                      manualStartSec: Number(e.target.value),
+                    },
+                  })
+                }
+                aria-label="Sender Name start seconds"
+                className="w-16 h-7 rounded bg-[var(--studio-subcard)] border border-[var(--studio-border)] px-1.5 text-xs font-mono tabular-nums text-right text-[var(--studio-primary)]"
+              />
+            ) : (
+              <span className="text-[11px] font-mono tabular-nums text-[var(--studio-primary)]">
+                {schedule.senderNameSegment.startSec.toFixed(2)}s
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

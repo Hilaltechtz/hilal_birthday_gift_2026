@@ -9,11 +9,14 @@ import {
   Sliders,
   Sparkles,
   Trash2,
+  Wand2,
 } from 'lucide-react';
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from 'react';
 import {
   DEFAULT_FRAME_CONFIG,
+  DEFAULT_PHOTO_EFFECT_CONFIG,
   DEFAULT_TRANSITION_CONFIG,
+  PhotoEffectConfig,
   PhotoFrameConfig,
   PhotoTransitionConfig,
   SAMPLE_STUDIO_PHOTOS,
@@ -27,6 +30,8 @@ import {
   LoadedImageMap,
   preloadProjectImages,
 } from '../../utils/videoCanvasScene';
+import { getPhotoEffectName } from '../../utils/videoPhotoEffects';
+import { PhotoEffectsStudioPanel } from './PhotoEffectsStudioPanel';
 import { InspectorTab, PhotoInspectorModal } from './PhotoInspectorModal';
 import { TransitionLibraryModal } from './TransitionLibraryModal';
 
@@ -66,8 +71,21 @@ export function PhotoManagerCard({
   const [libraryTargetPhotoId, setLibraryTargetPhotoId] = useState<
     string | null
   >(null);
+  const [selectedEffectPhotoId, setSelectedEffectPhotoId] = useState<
+    string | null
+  >(photos[0]?.id ?? null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (photos.length === 0) {
+      if (selectedEffectPhotoId !== null) setSelectedEffectPhotoId(null);
+      return;
+    }
+    if (!selectedEffectPhotoId || !photos.some((p) => p.id === selectedEffectPhotoId)) {
+      setSelectedEffectPhotoId(photos[0].id);
+    }
+  }, [photos, selectedEffectPhotoId]);
 
   useEffect(() => {
     let active = true;
@@ -96,6 +114,7 @@ export function PhotoManagerCard({
           caption: cleanName || 'A cherished birthday memory',
           transition: { ...DEFAULT_TRANSITION_CONFIG },
           frame: { ...DEFAULT_FRAME_CONFIG },
+          effect: { ...DEFAULT_PHOTO_EFFECT_CONFIG },
         });
       }
       if (added.length > 0) {
@@ -174,6 +193,29 @@ export function PhotoManagerCard({
     );
   };
 
+  const updatePhotoEffect = (id: string, nextEffect: PhotoEffectConfig) => {
+    onChangePhotos(
+      photos.map((p) => (p.id === id ? { ...p, effect: { ...nextEffect } } : p)),
+    );
+  };
+
+  const applyEffectToAll = (effect: PhotoEffectConfig) => {
+    onChangePhotos(
+      photos.map((p) => ({
+        ...p,
+        effect: { ...effect },
+      })),
+    );
+  };
+
+  const jumpToEffectsForPhoto = (id: string) => {
+    setSelectedEffectPhotoId(id);
+    const el = document.getElementById('photo-effects-studio');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   const openInspector = (id: string, tab: InspectorTab) => {
     setInspectorPhotoId(id);
     setInspectorTab(tab);
@@ -229,6 +271,7 @@ export function PhotoManagerCard({
                   ...p,
                   transition: { ...p.transition },
                   frame: { ...p.frame },
+                  effect: { ...(p.effect || DEFAULT_PHOTO_EFFECT_CONFIG) },
                 })),
               );
               onSelectOpening(SAMPLE_STUDIO_PHOTOS[0].id);
@@ -368,8 +411,24 @@ export function PhotoManagerCard({
                           : 'object-cover'
                       }`}
                     />
-                    <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/80 text-[11px] font-semibold text-[#f6e1a8] tabular-nums">
-                      #{index + 1} · {photo.transition.displayDurationSec.toFixed(1)}s
+                    <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                      <div className="px-2 py-0.5 rounded bg-black/80 text-[11px] font-semibold text-[#f6e1a8] tabular-nums">
+                        #{index + 1} · {photo.transition.displayDurationSec.toFixed(1)}s
+                      </div>
+                      {photo.effect && photo.effect.type !== 'none' && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            jumpToEffectsForPhoto(photo.id);
+                          }}
+                          className="px-2 py-0.5 rounded bg-[var(--studio-btn-bg)]/95 text-[10px] font-semibold text-[var(--studio-btn-text)] inline-flex items-center gap-1 cursor-pointer"
+                          title="Edit photo visual effect"
+                        >
+                          <Wand2 className="h-2.5 w-2.5" />
+                          <span>{getPhotoEffectName(photo.effect.type)}</span>
+                        </button>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -405,11 +464,11 @@ export function PhotoManagerCard({
                     />
 
                     {/* Individual Transition & Frame Actions */}
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-4 gap-1">
                       <button
                         type="button"
                         onClick={() => openInspector(photo.id, 'transition')}
-                        className="min-h-[34px] px-2 py-1 rounded-lg border border-[var(--studio-border)] bg-[var(--studio-subcard)] hover:border-[var(--studio-primary)] text-[11px] font-medium text-[var(--studio-primary)] inline-flex items-center justify-center gap-1 cursor-pointer"
+                        className="min-h-[34px] px-1.5 py-1 rounded-lg border border-[var(--studio-border)] bg-[var(--studio-subcard)] hover:border-[var(--studio-primary)] text-[11px] font-medium text-[var(--studio-primary)] inline-flex items-center justify-center gap-1 cursor-pointer"
                         title="Edit transition settings"
                       >
                         <Sliders className="h-3 w-3 shrink-0" />
@@ -419,7 +478,7 @@ export function PhotoManagerCard({
                       <button
                         type="button"
                         onClick={() => openInspector(photo.id, 'transition')}
-                        className="min-h-[34px] px-2 py-1 rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-subcard)] hover:border-[var(--studio-primary)] text-[11px] font-medium text-[var(--studio-text)] inline-flex items-center justify-center gap-1 cursor-pointer"
+                        className="min-h-[34px] px-1.5 py-1 rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-subcard)] hover:border-[var(--studio-primary)] text-[11px] font-medium text-[var(--studio-text)] inline-flex items-center justify-center gap-1 cursor-pointer"
                         title="Preview transition effect"
                       >
                         <Eye className="h-3 w-3 shrink-0" />
@@ -429,11 +488,25 @@ export function PhotoManagerCard({
                       <button
                         type="button"
                         onClick={() => openInspector(photo.id, 'frame')}
-                        className="min-h-[34px] px-2 py-1 rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-subcard)] hover:border-[var(--studio-primary)] text-[11px] font-medium text-[var(--studio-muted)] hover:text-[var(--studio-text)] inline-flex items-center justify-center gap-1 cursor-pointer"
+                        className="min-h-[34px] px-1.5 py-1 rounded-lg border border-[var(--studio-border-soft)] bg-[var(--studio-subcard)] hover:border-[var(--studio-primary)] text-[11px] font-medium text-[var(--studio-muted)] hover:text-[var(--studio-text)] inline-flex items-center justify-center gap-1 cursor-pointer"
                         title="Adjust crop & video framing"
                       >
                         <Crop className="h-3 w-3 shrink-0" />
                         <span className="truncate">Frame</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => jumpToEffectsForPhoto(photo.id)}
+                        className={`min-h-[34px] px-1.5 py-1 rounded-lg border text-[11px] font-medium inline-flex items-center justify-center gap-1 cursor-pointer ${
+                          photo.effect && photo.effect.type !== 'none'
+                            ? 'border-[var(--studio-primary)] bg-[var(--studio-active-tile)] text-[var(--studio-primary)]'
+                            : 'border-[var(--studio-border-soft)] bg-[var(--studio-subcard)] text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:border-[var(--studio-primary)]'
+                        }`}
+                        title="Open in Photo Effects Studio"
+                      >
+                        <Wand2 className="h-3 w-3 shrink-0" />
+                        <span className="truncate">Effects</span>
                       </button>
                     </div>
 
@@ -493,6 +566,17 @@ export function PhotoManagerCard({
               );
             })}
           </div>
+
+          {/* PHOTO EFFECTS STUDIO (26 Visual Effects) */}
+          <PhotoEffectsStudioPanel
+            photos={photos}
+            selectedPhotoId={selectedEffectPhotoId}
+            images={images}
+            videoTheme={videoTheme}
+            onSelectPhotoId={setSelectedEffectPhotoId}
+            onUpdatePhotoEffect={updatePhotoEffect}
+            onApplyEffectToAll={applyEffectToAll}
+          />
         </div>
       )}
 

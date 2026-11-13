@@ -1,16 +1,34 @@
 import {
+  CakeInteractionState,
   DEFAULT_FRAME_CONFIG,
   DEFAULT_TRANSITION_CONFIG,
   DEFAULT_VIDEO_THEME,
   PhotoFrameConfig,
   PhotoTransitionConfig,
+  resolveVideoScenes,
   StudioPhoto,
   StudioProjectConfig,
+  TextColorStyleConfig,
   TransitionType,
-  VIDEO_SCENES,
   VideoThemeConfig,
 } from '../types';
 import { blendHex, hexToRgba } from './themeColorUtils';
+import {
+  computeBeatAlignedSchedule,
+  resolveVideoTimelineBeats,
+  sampleBeatPulseAtTime,
+} from './beatSyncEngine';
+import { drawAdvancedCakeScene } from './videoCakeScene';
+import { drawCalendarIntroScene } from './videoCalendarScene';
+import {
+  drawPhotoEffectOverlay,
+  resolvePhotoPreTransform,
+} from './videoPhotoEffects';
+import {
+  buildFontColorFillStyle,
+  drawAnimatedTextBlock,
+  drawStyledTextLine,
+} from './videoTextAnimations';
 
 export interface LoadedImageMap {
   [photoId: string]: HTMLImageElement;
@@ -267,9 +285,14 @@ export function getFinalPhoto(config: StudioProjectConfig): StudioPhoto | null {
   return config.photos[config.photos.length - 1];
 }
 
-export function getSceneAtTime(t: number, duration: number) {
+export function getSceneAtTime(
+  t: number,
+  duration: number,
+  config?: StudioProjectConfig,
+) {
+  const scenes = resolveVideoScenes(config);
   const p = clamp01(t / Math.max(1, duration));
-  for (const scene of VIDEO_SCENES) {
+  for (const scene of scenes) {
     if (p >= scene.startFrac && p <= scene.endFrac) {
       const localP = clamp01(
         (p - scene.startFrac) / Math.max(0.0001, scene.endFrac - scene.startFrac),
@@ -278,7 +301,7 @@ export function getSceneAtTime(t: number, duration: number) {
     }
   }
   return {
-    scene: VIDEO_SCENES[VIDEO_SCENES.length - 1],
+    scene: scenes[scenes.length - 1],
     localP: 1,
     globalP: 1,
   };
@@ -447,6 +470,7 @@ function drawGoldenText(
   alpha = 1,
   italic = false,
   theme: VideoThemeConfig = DEFAULT_VIDEO_THEME,
+  colorStyle?: TextColorStyleConfig,
 ) {
   ctx.save();
   ctx.globalAlpha = clamp01(alpha);
@@ -467,217 +491,29 @@ function drawGoldenText(
   grad.addColorStop(0.5, theme.textColor);
   grad.addColorStop(1, theme.titleGradientEnd);
 
-  ctx.shadowColor = hexToRgba(theme.glowColor, 0.48);
-  ctx.shadowBlur = Math.max(8, fontSize * 0.28);
-  ctx.fillStyle = grad;
+  const fillStyle = buildFontColorFillStyle(
+    ctx,
+    colorStyle,
+    x - fontSize * 4,
+    y - totalH * 0.5,
+    x + fontSize * 4,
+    y + totalH * 0.5,
+    grad,
+  );
 
   lines.forEach((line, idx) => {
-    ctx.fillText(line, x, startY + idx * lineHeight);
-  });
-  ctx.restore();
-}
-
-function drawBirthdayCakeIllustration(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  t: number,
-  localP: number,
-  theme: VideoThemeConfig = DEFAULT_VIDEO_THEME,
-) {
-  const minDim = Math.min(w, h);
-  const cx = w * 0.5;
-  const baseY = h * 0.69;
-  const scaleIn = easeOutCubic(clamp01(localP * 3.2));
-
-  ctx.save();
-  ctx.translate(cx, baseY);
-  ctx.scale(scaleIn, scaleIn);
-  ctx.translate(-cx, -baseY);
-
-  const standW = minDim * 0.54;
-  const standDark = blendHex(theme.cakeStandColor, '#000000', 0.25);
-  const standLight = blendHex(theme.cakeStandColor, '#FFFFFF', 0.3);
-  const goldGrad = ctx.createLinearGradient(
-    cx - standW * 0.5,
-    0,
-    cx + standW * 0.5,
-    0,
-  );
-  goldGrad.addColorStop(0, standDark);
-  goldGrad.addColorStop(0.5, standLight);
-  goldGrad.addColorStop(1, standDark);
-
-  ctx.fillStyle = goldGrad;
-  drawRoundedRectPath(
-    ctx,
-    cx - standW * 0.07,
-    baseY,
-    standW * 0.14,
-    minDim * 0.08,
-    6,
-  );
-  ctx.fill();
-  drawRoundedRectPath(
-    ctx,
-    cx - standW * 0.25,
-    baseY + minDim * 0.07,
-    standW * 0.5,
-    minDim * 0.025,
-    8,
-  );
-  ctx.fill();
-  drawRoundedRectPath(
-    ctx,
-    cx - standW * 0.5,
-    baseY - minDim * 0.02,
-    standW,
-    minDim * 0.028,
-    12,
-  );
-  ctx.fill();
-
-  const drawTier = (
-    tierW: number,
-    tierH: number,
-    yTop: number,
-    tierColor: string,
-    dripColor: string,
-  ) => {
-    const xLeft = cx - tierW * 0.5;
-    const shadeColor = blendHex(tierColor, '#000000', 0.34);
-    const bodyGrad = ctx.createLinearGradient(xLeft, yTop, xLeft + tierW, yTop);
-    bodyGrad.addColorStop(0, shadeColor);
-    bodyGrad.addColorStop(0.45, tierColor);
-    bodyGrad.addColorStop(1, shadeColor);
-
-    ctx.fillStyle = bodyGrad;
-    drawRoundedRectPath(ctx, xLeft, yTop, tierW, tierH, minDim * 0.022);
-    ctx.fill();
-
-    const beadCount = 11;
-    const beadR = minDim * 0.011;
-    ctx.fillStyle = theme.cakeIcingColor;
-    for (let i = 0; i <= beadCount; i++) {
-      const bx = xLeft + beadR + (i / beadCount) * (tierW - beadR * 2);
-      ctx.beginPath();
-      ctx.arc(bx, yTop + tierH - beadR * 0.5, beadR, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.fillStyle = dripColor;
-    drawRoundedRectPath(
+    drawStyledTextLine(
       ctx,
-      xLeft - 2,
-      yTop,
-      tierW + 4,
-      tierH * 0.26,
-      minDim * 0.016,
+      line,
+      x,
+      startY + idx * lineHeight,
+      fontSize,
+      fillStyle,
+      colorStyle,
+      theme.glowColor,
+      0.95,
     );
-    ctx.fill();
-    const drips = 7;
-    for (let i = 0; i < drips; i++) {
-      const dx = xLeft + ((i + 0.5) / drips) * tierW;
-      const dh = tierH * (0.22 + (i % 3) * 0.1);
-      drawRoundedRectPath(
-        ctx,
-        dx - minDim * 0.011,
-        yTop + tierH * 0.14,
-        minDim * 0.022,
-        dh,
-        8,
-      );
-      ctx.fill();
-    }
-  };
-
-  const t1W = minDim * 0.44;
-  const t1H = minDim * 0.14;
-  const t1Y = baseY - minDim * 0.02 - t1H;
-  drawTier(t1W, t1H, t1Y, theme.cakeTier1Color, theme.cakeIcingColor);
-
-  const t2W = minDim * 0.33;
-  const t2H = minDim * 0.12;
-  const t2Y = t1Y - t2H;
-  drawTier(
-    t2W,
-    t2H,
-    t2Y,
-    theme.cakeTier2Color,
-    blendHex(theme.cakeIcingColor, theme.cakeTier3Color, 0.35),
-  );
-
-  const t3W = minDim * 0.22;
-  const t3H = minDim * 0.095;
-  const t3Y = t2Y - t3H;
-  drawTier(t3W, t3H, t3Y, theme.cakeTier3Color, theme.cakeIcingColor);
-
-  const candleCount = 5;
-  for (let i = 0; i < candleCount; i++) {
-    const cxCandle = cx + (i - 2) * (t3W * 0.18);
-    const ch = minDim * (i === 2 ? 0.075 : 0.062);
-    const cw = minDim * 0.016;
-    const cyTop = t3Y - ch;
-
-    ctx.fillStyle = i % 2 === 0 ? theme.textColor : theme.cakeStandColor;
-    drawRoundedRectPath(ctx, cxCandle - cw * 0.5, cyTop, cw, ch, 3);
-    ctx.fill();
-
-    ctx.strokeStyle = '#1E1B24';
-    ctx.lineWidth = Math.max(1.2, minDim * 0.0025);
-    ctx.beginPath();
-    ctx.moveTo(cxCandle, cyTop);
-    ctx.lineTo(cxCandle, cyTop - minDim * 0.012);
-    ctx.stroke();
-
-    const flicker = 1 + Math.sin(t * 14 + i * 2.1) * 0.12;
-    const flameY = cyTop - minDim * 0.024;
-    const halo = ctx.createRadialGradient(
-      cxCandle,
-      flameY,
-      0,
-      cxCandle,
-      flameY,
-      minDim * 0.055 * flicker,
-    );
-    halo.addColorStop(0, hexToRgba(theme.glowColor, 0.72));
-    halo.addColorStop(0.5, 'rgba(255, 167, 38, 0.24)');
-    halo.addColorStop(1, 'rgba(255, 167, 38, 0)');
-    ctx.fillStyle = halo;
-    ctx.beginPath();
-    ctx.arc(cxCandle, flameY, minDim * 0.055 * flicker, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.save();
-    ctx.translate(cxCandle, flameY);
-    ctx.rotate(Math.sin(t * 10 + i) * 0.08);
-    ctx.fillStyle = '#FFA726';
-    ctx.beginPath();
-    ctx.ellipse(
-      0,
-      0,
-      minDim * 0.009 * flicker,
-      minDim * 0.019 * flicker,
-      0,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-    ctx.fillStyle = '#FFF9D6';
-    ctx.beginPath();
-    ctx.ellipse(
-      0,
-      minDim * 0.003,
-      minDim * 0.0045,
-      minDim * 0.01,
-      0,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-    ctx.restore();
-  }
-
+  });
   ctx.restore();
 }
 
@@ -757,6 +593,9 @@ function drawSingleFramedCard(
   transform: CardTransform,
   showCaption: boolean,
   theme: VideoThemeConfig = DEFAULT_VIDEO_THEME,
+  effectTimeSec = 0,
+  seeds: ParticleSeed[] = [],
+  captionColorStyle?: TextColorStyleConfig,
 ) {
   if (transform.alpha <= 0.01) return;
   const minDim = Math.min(width, height);
@@ -764,6 +603,7 @@ function drawSingleFramedCard(
   const frameCfg = photo.frame || DEFAULT_FRAME_CONFIG;
   const transCfg = photo.transition || DEFAULT_TRANSITION_CONFIG;
   const zoomAmt = transCfg.zoomIntensity ?? 0.14;
+  const preEffect = resolvePhotoPreTransform(photo.effect, effectTimeSec);
 
   const cx = frameX + frameW * 0.5 + transform.offsetX;
   const cy = frameY + frameH * 0.5 + transform.offsetY;
@@ -808,8 +648,9 @@ function drawSingleFramedCard(
   ctx.scale(transform.scaleX, transform.scaleY);
   ctx.translate(-(frameX + frameW * 0.5), -(frameY + frameH * 0.5));
 
-  if (transform.blurPx > 0.3 && 'filter' in ctx) {
-    ctx.filter = `blur(${transform.blurPx.toFixed(1)}px)`;
+  const totalBlur = Math.max(transform.blurPx, preEffect.blurPx);
+  if (totalBlur > 0.3 && 'filter' in ctx) {
+    ctx.filter = `blur(${totalBlur.toFixed(1)}px)`;
   }
 
   ctx.shadowColor = hexToRgba(theme.glowColor, 0.42);
@@ -831,6 +672,18 @@ function drawSingleFramedCard(
   ctx.clip();
 
   if (img) {
+    ctx.save();
+    if (preEffect.mirrorX || preEffect.pulseScale !== 1) {
+      const imgCx = frameX + frameW * 0.5;
+      const imgCy = frameY + frameH * 0.5;
+      ctx.translate(imgCx, imgCy);
+      ctx.scale(
+        (preEffect.mirrorX ? -1 : 1) * preEffect.pulseScale,
+        preEffect.pulseScale,
+      );
+      ctx.translate(-imgCx, -imgCy);
+    }
+
     const dirFactor =
       transCfg.direction === 'right' || transCfg.direction === 'down' ? -1 : 1;
     const motionZoom = 1.0 + easeInOutCubic(kenBurnsP) * zoomAmt;
@@ -849,6 +702,26 @@ function drawSingleFramedCard(
       motionZoom,
       panX,
       panY,
+    );
+    ctx.restore();
+  }
+
+  if ('filter' in ctx) {
+    ctx.filter = 'none';
+  }
+
+  // Render active Photo Effects Studio overlay cleanly inside photo bounds
+  if (photo.effect && photo.effect.type !== 'none') {
+    drawPhotoEffectOverlay(
+      ctx,
+      frameX + 4,
+      frameY + 4,
+      frameW - 8,
+      frameH - 8,
+      effectTimeSec,
+      photo.effect,
+      seeds,
+      theme,
     );
   }
   ctx.restore();
@@ -875,15 +748,30 @@ function drawSingleFramedCard(
   ctx.stroke();
 
   if (showCaption && photo.caption.trim()) {
-    ctx.font = `italic 500 ${Math.round(minDim * 0.036)}px "Cormorant Garamond", Georgia, serif`;
+    const capFontSize = Math.round(minDim * 0.036);
+    ctx.font = `italic 500 ${capFontSize}px "Cormorant Garamond", Georgia, serif`;
     const cLines = wrapTextLines(ctx, photo.caption, width * 0.8);
-    ctx.fillStyle = theme.subtitleColor;
     ctx.textAlign = 'center';
+    const capFill = buildFontColorFillStyle(
+      ctx,
+      captionColorStyle,
+      width * 0.2,
+      frameY + frameH,
+      width * 0.8,
+      frameY + frameH + minDim * 0.14,
+      theme.subtitleColor,
+    );
     cLines.slice(0, 2).forEach((line, lineIdx) => {
-      ctx.fillText(
+      drawStyledTextLine(
+        ctx,
         line,
         width * 0.5,
         frameY + frameH + minDim * 0.068 + lineIdx * minDim * 0.044,
+        capFontSize,
+        capFill,
+        captionColorStyle,
+        theme.glowColor,
+        captionColorStyle ? captionColorStyle.glowIntensity : 0.3,
       );
     });
   }
@@ -946,6 +834,8 @@ export function renderPhotoTransitionPair(
   seeds: ParticleSeed[],
   showCaptions = true,
   theme: VideoThemeConfig = DEFAULT_VIDEO_THEME,
+  effectTimeSec = 0,
+  captionColorStyle?: TextColorStyleConfig,
 ) {
   const speedMult =
     transition.speed === 'fast' ? 1.35 : transition.speed === 'slow' ? 0.78 : 1.0;
@@ -1102,6 +992,9 @@ export function renderPhotoTransitionPair(
     baseOut,
     showCaptions,
     theme,
+    effectTimeSec,
+    seeds,
+    captionColorStyle,
   );
   drawSingleFramedCard(
     ctx,
@@ -1117,6 +1010,9 @@ export function renderPhotoTransitionPair(
     baseIn,
     showCaptions,
     theme,
+    effectTimeSec,
+    seeds,
+    captionColorStyle,
   );
 
   if (type === 'golden-particles') {
@@ -1175,7 +1071,8 @@ export function drawStandaloneTransitionDemo(
   showCaptions = false,
   theme: VideoThemeConfig = DEFAULT_VIDEO_THEME,
 ) {
-  drawRoyalBackdrop(ctx, width, height, progress01 * 4, seeds, theme);
+  const demoTimeSec = progress01 * 4;
+  drawRoyalBackdrop(ctx, width, height, demoTimeSec, seeds, theme);
 
   const frameW = width * 0.78;
   const frameH = height * (showCaptions ? 0.64 : 0.76);
@@ -1197,6 +1094,8 @@ export function drawStandaloneTransitionDemo(
       { alpha: 1, offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotation: 0, blurPx: 0 },
       showCaptions,
       theme,
+      demoTimeSec,
+      seeds,
     );
   } else if (progress01 < 0.75) {
     const tr = (progress01 - 0.25) / 0.5;
@@ -1217,6 +1116,7 @@ export function drawStandaloneTransitionDemo(
       seeds,
       showCaptions,
       theme,
+      demoTimeSec,
     );
   } else {
     drawSingleFramedCard(
@@ -1233,6 +1133,8 @@ export function drawStandaloneTransitionDemo(
       { alpha: 1, offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotation: 0, blurPx: 0 },
       showCaptions,
       theme,
+      demoTimeSec,
+      seeds,
     );
   }
 }
@@ -1243,6 +1145,7 @@ export function drawStandaloneTransitionDemo(
  */
 function getScene3PhotoSchedule(
   orderedPhotos: StudioPhoto[],
+  sceneStartSec: number,
   sceneDurationSec: number,
   config: StudioProjectConfig,
 ) {
@@ -1250,6 +1153,10 @@ function getScene3PhotoSchedule(
     Math.max(1.5, p.transition?.displayDurationSec || 4),
   );
   const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+  const beats =
+    config.beatSync?.sceneBeatSnap && config.beatSync?.mode !== 'off'
+      ? resolveVideoTimelineBeats(config)
+      : [];
 
   const segments: {
     index: number;
@@ -1261,11 +1168,34 @@ function getScene3PhotoSchedule(
   let cursor = 0;
   for (let i = 0; i < orderedPhotos.length; i++) {
     let segDur = (weights[i] / totalWeight) * sceneDurationSec;
-    if (config.music?.syncToBeat && config.music.bpm && i < orderedPhotos.length - 1) {
-      const beatSec = 60 / config.music.bpm;
-      const snapped = Math.max(beatSec * 2, Math.round(segDur / beatSec) * beatSec);
-      if (cursor + snapped < sceneDurationSec - 0.8) {
-        segDur = snapped;
+    if (i < orderedPhotos.length - 1) {
+      const targetMovieSec = sceneStartSec + cursor + segDur;
+      if (beats.length > 0 && (config.music?.syncToBeat ?? true)) {
+        // Pick strongest beat within +/-0.6s of proportional boundary
+        let bestBeatSec: number | null = null;
+        let bestScore = -Infinity;
+        for (const b of beats) {
+          const dist = Math.abs(b.timeSec - targetMovieSec);
+          if (dist <= 0.6) {
+            const candidateDur = b.timeSec - (sceneStartSec + cursor);
+            if (candidateDur >= 1.1 && cursor + candidateDur < sceneDurationSec - 0.9) {
+              const score = (1 - dist / 0.6) * 0.55 + b.strength * 0.45 + (b.isManual ? 0.35 : 0);
+              if (score > bestScore) {
+                bestScore = score;
+                bestBeatSec = b.timeSec;
+              }
+            }
+          }
+        }
+        if (bestBeatSec !== null) {
+          segDur = bestBeatSec - (sceneStartSec + cursor);
+        }
+      } else if (config.music?.syncToBeat && config.music.bpm) {
+        const beatSec = 60 / config.music.bpm;
+        const snapped = Math.max(beatSec * 2, Math.round(segDur / beatSec) * beatSec);
+        if (cursor + snapped < sceneDurationSec - 0.8) {
+          segDur = snapped;
+        }
       }
     }
     const endSec = i === orderedPhotos.length - 1 ? sceneDurationSec : cursor + segDur;
@@ -1281,6 +1211,11 @@ function getScene3PhotoSchedule(
   return segments;
 }
 
+export interface VideoFrameRenderOptions {
+  cakeState?: CakeInteractionState;
+  interactionClockSec?: number;
+}
+
 /**
  * Deterministic master frame renderer for both live studio preview and export.
  */
@@ -1292,10 +1227,11 @@ export function drawVideoFrame(
   config: StudioProjectConfig,
   images: LoadedImageMap,
   seeds: ParticleSeed[],
+  options?: VideoFrameRenderOptions,
 ) {
   const duration = config.durationSeconds;
   const minDim = Math.min(width, height);
-  const { scene, localP, globalP } = getSceneAtTime(t, duration);
+  const { scene, localP, globalP } = getSceneAtTime(t, duration, config);
   const theme: VideoThemeConfig = config.videoTheme || DEFAULT_VIDEO_THEME;
 
   const masterAlpha =
@@ -1305,9 +1241,20 @@ export function drawVideoFrame(
         ? clamp01((1 - globalP) / 0.04)
         : 1;
 
+  if (scene.id === 'calendar') {
+    drawCalendarIntroScene(ctx, width, height, localP, t, config, seeds);
+    if (masterAlpha < 1) {
+      ctx.fillStyle = hexToRgba(theme.backgroundPrimary, 1 - masterAlpha);
+      ctx.fillRect(0, 0, width, height);
+    }
+    return;
+  }
+
   drawRoyalBackdrop(ctx, width, height, t, seeds, theme);
 
   ctx.save();
+
+  const fontColors = config.fontColors;
 
   // SCENE 1: MAGICAL INTRODUCTION
   if (scene.id === 'intro') {
@@ -1344,6 +1291,7 @@ export function drawVideoFrame(
         textAlpha,
         false,
         theme,
+        fontColors?.openingMessage,
       );
     } else {
       const subP = clamp01((localP - 0.55) / 0.45);
@@ -1365,19 +1313,36 @@ export function drawVideoFrame(
         nameAlpha,
         false,
         theme,
+        fontColors?.recipientName,
       );
       ctx.restore();
 
       if (config.birthdayDate.trim()) {
+        const dateStyle = fontColors?.greetingAndDate;
+        const dateFontSz = Math.round(minDim * 0.028);
         ctx.save();
         ctx.globalAlpha = nameAlpha * 0.92;
         ctx.textAlign = 'center';
-        ctx.font = `500 ${Math.round(minDim * 0.028)}px "Plus Jakarta Sans", sans-serif`;
-        ctx.fillStyle = theme.subtitleColor;
-        ctx.fillText(
+        ctx.font = `500 ${dateFontSz}px "Plus Jakarta Sans", sans-serif`;
+        const dateFill = buildFontColorFillStyle(
+          ctx,
+          dateStyle,
+          width * 0.3,
+          height * 0.5 + minDim * 0.08,
+          width * 0.7,
+          height * 0.5 + minDim * 0.14,
+          theme.subtitleColor,
+        );
+        drawStyledTextLine(
+          ctx,
           config.birthdayDate.toUpperCase(),
           width * 0.5,
           height * 0.5 + minDim * 0.11,
+          dateFontSz,
+          dateFill,
+          dateStyle,
+          theme.glowColor,
+          dateStyle ? dateStyle.glowIntensity : 0.3,
         );
         ctx.restore();
       }
@@ -1414,20 +1379,37 @@ export function drawVideoFrame(
       fade,
       false,
       theme,
+      fontColors?.mainTitle,
     );
 
     if (config.personalGreeting.trim()) {
-      ctx.font = `400 ${Math.round(minDim * 0.028)}px "Plus Jakarta Sans", sans-serif`;
+      const greetFontSz = Math.round(minDim * 0.028);
+      const greetStyle = fontColors?.greetingAndDate;
+      ctx.font = `400 ${greetFontSz}px "Plus Jakarta Sans", sans-serif`;
       const gLines = wrapTextLines(ctx, config.personalGreeting, width * 0.78);
       ctx.save();
       ctx.globalAlpha = fade * 0.94;
       ctx.textAlign = 'center';
-      ctx.fillStyle = theme.textColor;
+      const greetFill = buildFontColorFillStyle(
+        ctx,
+        greetStyle,
+        width * 0.15,
+        height * 0.58,
+        width * 0.85,
+        height * 0.72,
+        theme.textColor,
+      );
       gLines.slice(0, 3).forEach((line, idx) => {
-        ctx.fillText(
+        drawStyledTextLine(
+          ctx,
           line,
           width * 0.5,
           height * 0.61 + idx * minDim * 0.04,
+          greetFontSz,
+          greetFill,
+          greetStyle,
+          theme.glowColor,
+          greetStyle ? greetStyle.glowIntensity : 0.25,
         );
       });
       ctx.restore();
@@ -1438,11 +1420,15 @@ export function drawVideoFrame(
   else if (scene.id === 'memories') {
     const orderedPhotos = getOrderedMemoryPhotos(config);
     if (orderedPhotos.length > 0) {
-      const sceneDurationSec =
-        (VIDEO_SCENES[2].endFrac - VIDEO_SCENES[2].startFrac) * duration;
+      const sceneStartSec = scene.startFrac * duration;
+      const sceneDurationSec = Math.max(
+        1,
+        (scene.endFrac - scene.startFrac) * duration,
+      );
       const elapsedInScene = localP * sceneDurationSec;
       const schedule = getScene3PhotoSchedule(
         orderedPhotos,
+        sceneStartSec,
         sceneDurationSec,
         config,
       );
@@ -1493,6 +1479,8 @@ export function drawVideoFrame(
           seeds,
           true,
           theme,
+          t,
+          fontColors?.photoCaption,
         );
       } else {
         let alpha = 1;
@@ -1535,6 +1523,9 @@ export function drawVideoFrame(
           },
           true,
           theme,
+          t,
+          seeds,
+          fontColors?.photoCaption,
         );
       }
     } else {
@@ -1552,103 +1543,59 @@ export function drawVideoFrame(
     }
   }
 
-  // SCENE 4: MAGICAL BIRTHDAY CAKE
+  // SCENE 4: ADVANCED MAGICAL BIRTHDAY CAKE SHOW
   else if (scene.id === 'cake') {
-    const fade =
-      localP < 0.12
-        ? localP / 0.12
-        : localP > 0.88
-          ? (1 - localP) / 0.12
-          : 1;
-    ctx.save();
-    ctx.globalAlpha = fade;
-
-    drawGoldenText(
-      ctx,
-      ['MAKE A WISH'],
-      width * 0.5,
-      height * 0.2,
-      minDim * 0.065,
-      minDim * 0.078,
-      fade,
-      false,
-      theme,
-    );
-
-    drawBirthdayCakeIllustration(ctx, width, height, t, localP, theme);
-
-    if (localP > 0.45) {
-      drawConfettiBurst(
-        ctx,
-        width,
-        height,
-        (localP - 0.45) * 2.2,
-        seeds,
-        0.9,
-        theme,
-      );
-    }
-    ctx.restore();
-  }
-
-  // SCENE 5: PERSONALIZED BIRTHDAY WISHES
-  else if (scene.id === 'wishes') {
-    const wishes =
-      config.messages.wishes.filter((w) => w.trim().length > 0).length > 0
-        ? config.messages.wishes.filter((w) => w.trim().length > 0)
-        : ['Wishing you joy, health, and endless blessings.'];
-
-    const wishIdx = Math.min(
-      wishes.length - 1,
-      Math.floor(localP * wishes.length),
-    );
-    const wishLocalP =
-      localP * wishes.length - Math.floor(localP * wishes.length);
-    const wishAlpha =
-      wishLocalP < 0.16
-        ? wishLocalP / 0.16
-        : wishLocalP > 0.84
-          ? (1 - wishLocalP) / 0.16
-          : 1;
-
-    ctx.save();
-    ctx.globalAlpha = wishAlpha;
-
-    const lineW = minDim * 0.22;
-    ctx.strokeStyle = hexToRgba(theme.photoFrameColor, 0.6);
-    ctx.lineWidth = Math.max(1.5, minDim * 0.0025);
-    ctx.beginPath();
-    ctx.moveTo(width * 0.5 - lineW * 0.5, height * 0.34);
-    ctx.lineTo(width * 0.5 + lineW * 0.5, height * 0.34);
-    ctx.moveTo(width * 0.5 - lineW * 0.5, height * 0.66);
-    ctx.lineTo(width * 0.5 + lineW * 0.5, height * 0.66);
-    ctx.stroke();
-
-    const wFontSize = minDim * 0.052;
-    ctx.font = `italic 600 ${Math.round(wFontSize)}px "Cormorant Garamond", Georgia, serif`;
-    const wLines = wrapTextLines(ctx, `“${wishes[wishIdx]}”`, width * 0.82);
-
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowColor = hexToRgba(theme.glowColor, 0.4);
-    ctx.shadowBlur = Math.max(6, wFontSize * 0.22);
-    ctx.fillStyle = theme.textColor;
-    const totalH = wLines.length * (wFontSize * 1.28);
-    const startY = height * 0.5 - totalH * 0.5 + wFontSize * 0.64;
-    wLines.forEach((line, idx) => {
-      ctx.fillText(line, width * 0.5, startY + idx * (wFontSize * 1.28));
+    drawAdvancedCakeScene(ctx, width, height, config, seeds, {
+      t,
+      localP,
+      cakeState: options?.cakeState,
+      interactionClockSec: options?.interactionClockSec,
+      allowAutoVideoTriggers: true,
+      drawStandaloneBackdrop: false,
     });
-    ctx.restore();
-
-    ctx.restore();
   }
 
-  // SCENE 6: FINAL SURPRISE + FINAL PHOTO + FIREWORKS
+  // SCENE 5: PERSONALIZED BIRTHDAY WISHES (15-Style Per-Wish Beat-Synced Motion)
+  else if (scene.id === 'wishes') {
+    const schedule = computeBeatAlignedSchedule(config);
+    const beatPulse = sampleBeatPulseAtTime(t, schedule.videoBeats);
+
+    // Slight cross-transition overlap window (0.12s) avoids any blank flash between consecutive wishes
+    for (let i = 0; i < schedule.wishSegments.length; i++) {
+      const seg = schedule.wishSegments[i];
+      const segDur = Math.max(1.0, seg.endSec - seg.startSec);
+      if (t >= seg.startSec && t <= seg.endSec) {
+        drawAnimatedTextBlock(ctx, {
+          width,
+          height,
+          t,
+          elapsedInSegment: t - seg.startSec,
+          segmentDuration: segDur,
+          text: seg.text,
+          anim: seg.config,
+          theme,
+          colorStyle: fontColors?.birthdayWishes,
+          baseFontSize: minDim * 0.052,
+          maxWidth: width * 0.82,
+          defaultY: height * 0.5,
+          italic: true,
+          quoted: true,
+          beatPulse,
+          seeds,
+          showRuleLines: true,
+        });
+      }
+    }
+  }
+
+  // SCENE 6: FINAL SURPRISE + SPECIAL MESSAGE + TWO-STAGE SENDER REVEAL + FIREWORKS
   else if (scene.id === 'surprise') {
+    const schedule = computeBeatAlignedSchedule(config);
+    const beatPulse = sampleBeatPulseAtTime(t, schedule.videoBeats);
+
     drawFireworks(ctx, width, height, localP, seeds, theme);
 
-    const fade = localP < 0.15 ? localP / 0.15 : 1;
+    const fade = localP < 0.12 ? localP / 0.12 : 1;
     ctx.save();
     ctx.globalAlpha = fade;
 
@@ -1656,13 +1603,14 @@ export function drawVideoFrame(
     const finalImg = finalPhoto ? images[finalPhoto.id] : null;
 
     if (finalPhoto && finalImg) {
-      const boxSize = minDim * 0.36;
+      const boxSize = minDim * 0.34;
       const bx = (width - boxSize) * 0.5;
-      const by = height * 0.34 - boxSize * 0.5;
+      const by = height * 0.31 - boxSize * 0.5;
       const r = minDim * 0.025;
+      const preFinalFx = resolvePhotoPreTransform(finalPhoto.effect, t);
 
       ctx.save();
-      ctx.shadowColor = hexToRgba(theme.glowColor, 0.45);
+      ctx.shadowColor = hexToRgba(theme.glowColor, 0.45 + beatPulse * 0.25);
       ctx.shadowBlur = minDim * 0.04;
       drawRoundedRectPath(ctx, bx, by, boxSize, boxSize, r);
       ctx.fillStyle = theme.backgroundPrimary;
@@ -1672,6 +1620,20 @@ export function drawVideoFrame(
       ctx.save();
       drawRoundedRectPath(ctx, bx, by, boxSize, boxSize, r);
       ctx.clip();
+      if (preFinalFx.blurPx > 0.3 && 'filter' in ctx) {
+        ctx.filter = `blur(${preFinalFx.blurPx.toFixed(1)}px)`;
+      }
+      ctx.save();
+      if (preFinalFx.mirrorX || preFinalFx.pulseScale !== 1) {
+        const fcx = bx + boxSize * 0.5;
+        const fcy = by + boxSize * 0.5;
+        ctx.translate(fcx, fcy);
+        ctx.scale(
+          (preFinalFx.mirrorX ? -1 : 1) * preFinalFx.pulseScale,
+          preFinalFx.pulseScale,
+        );
+        ctx.translate(-fcx, -fcy);
+      }
       drawFramedImageContent(
         ctx,
         finalImg,
@@ -1680,10 +1642,27 @@ export function drawVideoFrame(
         boxSize,
         boxSize,
         finalPhoto.frame || DEFAULT_FRAME_CONFIG,
-        1.02 + localP * 0.05,
+        1.02 + localP * 0.05 + beatPulse * 0.015,
         0,
         0,
       );
+      ctx.restore();
+      if ('filter' in ctx) {
+        ctx.filter = 'none';
+      }
+      if (finalPhoto.effect && finalPhoto.effect.type !== 'none') {
+        drawPhotoEffectOverlay(
+          ctx,
+          bx,
+          by,
+          boxSize,
+          boxSize,
+          t,
+          finalPhoto.effect,
+          seeds,
+          theme,
+        );
+      }
       ctx.restore();
 
       ctx.strokeStyle = theme.photoFrameColor;
@@ -1692,38 +1671,89 @@ export function drawVideoFrame(
       ctx.stroke();
     }
 
-    const msgY = finalImg ? height * 0.63 : height * 0.45;
-    const spSize = minDim * 0.056;
-    ctx.font = `600 ${Math.round(spSize)}px "Cormorant Garamond", Georgia, serif`;
-    const spLines = wrapTextLines(
-      ctx,
-      config.messages.specialMessage || 'YOU ARE SPECIAL. KEEP SHINING!',
-      width * 0.84,
-    );
-    drawGoldenText(
-      ctx,
-      spLines,
-      width * 0.5,
-      msgY,
-      spSize,
-      spSize * 1.18,
-      fade,
-      false,
-      theme,
-    );
-
-    const signOff = `${config.messages.finalMessage || 'WITH LOVE AND BEST WISHES FROM'} ${config.messages.senderName || 'YOUR FRIEND'}`.trim();
-    ctx.font = `600 ${Math.round(minDim * 0.027)}px "Plus Jakarta Sans", sans-serif`;
-    const sLines = wrapTextLines(ctx, signOff.toUpperCase(), width * 0.82);
-    ctx.fillStyle = theme.subtitleColor;
-    ctx.textAlign = 'center';
-    sLines.forEach((line, idx) => {
-      ctx.fillText(
-        line,
+    // 1. Special Message Reveal (Synced to dramatic beat + independent entrance/exit)
+    const spSeg = schedule.specialSegment;
+    if (t >= spSeg.startSec) {
+      const spDefaultY = finalImg ? height * 0.585 : height * 0.38;
+      // Golden ambient halo behind special message
+      const glowW = width * 0.72;
+      const haloGrad = ctx.createRadialGradient(
         width * 0.5,
-        msgY + minDim * 0.11 + idx * minDim * 0.038,
+        spDefaultY,
+        0,
+        width * 0.5,
+        spDefaultY,
+        glowW * 0.5,
       );
-    });
+      haloGrad.addColorStop(0, hexToRgba(theme.glowColor, 0.16 + beatPulse * 0.14));
+      haloGrad.addColorStop(1, hexToRgba(theme.backgroundPrimary, 0));
+      ctx.fillStyle = haloGrad;
+      ctx.fillRect(0, spDefaultY - glowW * 0.25, width, glowW * 0.5);
+
+      drawAnimatedTextBlock(ctx, {
+        width,
+        height,
+        t,
+        elapsedInSegment: t - spSeg.startSec,
+        segmentDuration: Math.max(1.2, spSeg.endSec - spSeg.startSec),
+        text: spSeg.text,
+        anim: spSeg.config,
+        theme,
+        colorStyle: fontColors?.specialMessage,
+        baseFontSize: minDim * 0.054,
+        maxWidth: width * 0.84,
+        defaultY: spDefaultY,
+        uppercase: true,
+        beatPulse,
+        seeds,
+      });
+    }
+
+    // 2. Sender Intro Line (e.g. "WITH LOVE AND BEST WISHES FROM" / "FROM YOUR FRIEND")
+    const introSeg = schedule.senderIntroSegment;
+    if (t >= introSeg.startSec) {
+      const introDefaultY = finalImg ? height * 0.715 : height * 0.55;
+      drawAnimatedTextBlock(ctx, {
+        width,
+        height,
+        t,
+        elapsedInSegment: t - introSeg.startSec,
+        segmentDuration: Math.max(1.0, introSeg.endSec - introSeg.startSec),
+        text: introSeg.text,
+        anim: introSeg.config,
+        theme,
+        colorStyle: fontColors?.closingPrefix,
+        baseFontSize: minDim * 0.028,
+        maxWidth: width * 0.82,
+        defaultY: introDefaultY,
+        uppercase: true,
+        beatPulse: beatPulse * 0.4,
+        seeds,
+      });
+    }
+
+    // 3. Prominent Sender Name Reveal (e.g. "HILAL") with Golden Halo & Celebration Glow
+    const nameSeg = schedule.senderNameSegment;
+    if (t >= nameSeg.startSec) {
+      const nameDefaultY = finalImg ? height * 0.805 : height * 0.67;
+      drawAnimatedTextBlock(ctx, {
+        width,
+        height,
+        t,
+        elapsedInSegment: t - nameSeg.startSec,
+        segmentDuration: Math.max(0.9, nameSeg.endSec - nameSeg.startSec),
+        text: nameSeg.text,
+        anim: nameSeg.config,
+        theme,
+        colorStyle: fontColors?.senderName,
+        baseFontSize: minDim * 0.068,
+        maxWidth: width * 0.82,
+        defaultY: nameDefaultY,
+        uppercase: true,
+        beatPulse,
+        seeds,
+      });
+    }
 
     ctx.restore();
   }

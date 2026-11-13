@@ -1,29 +1,75 @@
 import { Plus, Trash2 } from 'lucide-react';
 import {
   CustomAspectConfig,
+  DEFAULT_WISH_ANIMATION_PRESETS,
   PLATFORM_PRESETS,
   PlatformId,
   StudioMessages,
   VideoDurationOption,
 } from '../../types';
+import {
+  clampDayToMonth,
+  formatBirthdayLabel,
+  getDaysInMonth,
+  getMonthName,
+  isLeapYear,
+  MONTH_NAMES,
+} from '../../utils/calendarDateUtils';
 
 interface RecipientInfoCardProps {
   recipientName: string;
-  birthdayDate: string;
+  birthdayMonth: number;
+  birthdayDay: number;
+  birthdayYear: number | null;
   personalGreeting: string;
   onChangeName: (name: string) => void;
-  onChangeDate: (date: string) => void;
+  onChangeBirthdayParts: (month: number, day: number, year: number | null) => void;
   onChangeGreeting: (greeting: string) => void;
 }
 
 export function RecipientInfoCard({
   recipientName,
-  birthdayDate,
+  birthdayMonth,
+  birthdayDay,
+  birthdayYear,
   personalGreeting,
   onChangeName,
-  onChangeDate,
+  onChangeBirthdayParts,
   onChangeGreeting,
 }: RecipientInfoCardProps) {
+  const daysInSelectedMonth = getDaysInMonth(birthdayMonth, birthdayYear);
+  const formattedPreview = formatBirthdayLabel(
+    birthdayMonth,
+    birthdayDay,
+    birthdayYear,
+  );
+  const isLeap =
+    birthdayYear !== null && birthdayYear > 0 ? isLeapYear(birthdayYear) : null;
+
+  const handleMonthChange = (nextMonth: number) => {
+    const clampedDay = clampDayToMonth(nextMonth, birthdayDay, birthdayYear);
+    onChangeBirthdayParts(nextMonth, clampedDay, birthdayYear);
+  };
+
+  const handleDayChange = (nextDay: number) => {
+    const clampedDay = clampDayToMonth(birthdayMonth, nextDay, birthdayYear);
+    onChangeBirthdayParts(birthdayMonth, clampedDay, birthdayYear);
+  };
+
+  const handleYearChange = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      const clampedDay = clampDayToMonth(birthdayMonth, birthdayDay, null);
+      onChangeBirthdayParts(birthdayMonth, clampedDay, null);
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return;
+    const nextYear = Math.max(1900, Math.min(2150, Math.trunc(parsed)));
+    const clampedDay = clampDayToMonth(birthdayMonth, birthdayDay, nextYear);
+    onChangeBirthdayParts(birthdayMonth, clampedDay, nextYear);
+  };
+
   return (
     <section
       id="section-recipient"
@@ -36,11 +82,11 @@ export function RecipientInfoCard({
         Recipient Information
       </h2>
       <p className="mt-1 text-sm text-[var(--studio-muted)]">
-        Personalize who this birthday movie is created for.
+        Personalize who this birthday movie is created for and the exact birthday calendar date.
       </p>
 
       <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
+        <div className="sm:col-span-2">
           <label
             htmlFor="studio-recipient-name"
             className="block text-xs font-medium text-[var(--studio-muted)] mb-2"
@@ -57,21 +103,83 @@ export function RecipientInfoCard({
           />
         </div>
 
-        <div>
-          <label
-            htmlFor="studio-birthday-date"
-            className="block text-xs font-medium text-[var(--studio-muted)] mb-2"
-          >
-            Birthday Date
-          </label>
-          <input
-            id="studio-birthday-date"
-            type="text"
-            value={birthdayDate}
-            onChange={(e) => onChangeDate(e.target.value)}
-            placeholder="April 7"
-            className="w-full rounded-xl bg-[var(--studio-input)] border border-[var(--studio-border)] px-4 py-3 text-sm sm:text-base text-[var(--studio-text)] placeholder:text-[var(--studio-muted)]/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-primary)]"
-          />
+        {/* Validated Birthday Month / Day / Optional Year */}
+        <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label
+              htmlFor="studio-birthday-month"
+              className="block text-xs font-medium text-[var(--studio-muted)] mb-2"
+            >
+              Birthday Month
+            </label>
+            <select
+              id="studio-birthday-month"
+              value={birthdayMonth}
+              onChange={(e) => handleMonthChange(Number(e.target.value))}
+              className="w-full h-[46px] rounded-xl bg-[var(--studio-input)] border border-[var(--studio-border)] px-3.5 text-sm sm:text-base text-[var(--studio-text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-primary)]"
+            >
+              {MONTH_NAMES.map((name, idx) => (
+                <option key={name} value={idx + 1}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label
+              htmlFor="studio-birthday-day"
+              className="block text-xs font-medium text-[var(--studio-muted)] mb-2"
+            >
+              Birthday Day (1 – {daysInSelectedMonth})
+            </label>
+            <select
+              id="studio-birthday-day"
+              value={birthdayDay}
+              onChange={(e) => handleDayChange(Number(e.target.value))}
+              className="w-full h-[46px] rounded-xl bg-[var(--studio-input)] border border-[var(--studio-border)] px-3.5 text-sm sm:text-base font-mono tabular-nums text-[var(--studio-text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-primary)]"
+            >
+              {Array.from({ length: daysInSelectedMonth }, (_, i) => i + 1).map(
+                (dayNum) => (
+                  <option key={dayNum} value={dayNum}>
+                    {dayNum}
+                  </option>
+                ),
+              )}
+            </select>
+          </div>
+
+          <div>
+            <label
+              htmlFor="studio-birthday-year"
+              className="block text-xs font-medium text-[var(--studio-muted)] mb-2"
+            >
+              Year (Optional)
+            </label>
+            <input
+              id="studio-birthday-year"
+              type="number"
+              min={1900}
+              max={2150}
+              placeholder="Any year"
+              value={birthdayYear ?? ''}
+              onChange={(e) => handleYearChange(e.target.value)}
+              className="w-full h-[46px] rounded-xl bg-[var(--studio-input)] border border-[var(--studio-border)] px-3.5 text-sm sm:text-base font-mono tabular-nums text-[var(--studio-text)] placeholder:text-[var(--studio-muted)]/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-primary)]"
+            />
+          </div>
+
+          <p className="sm:col-span-3 text-xs text-[var(--studio-muted)] tabular-nums">
+            Selected celebration date:{' '}
+            <span className="font-semibold text-[var(--studio-primary)]">
+              {formattedPreview}
+            </span>{' '}
+            · {getMonthName(birthdayMonth)} has {daysInSelectedMonth} days
+            {birthdayMonth === 2 && isLeap !== null
+              ? isLeap
+                ? ' (Leap Year)'
+                : ' (Standard Year)'
+              : ''}
+          </p>
         </div>
 
         <div className="sm:col-span-2">
@@ -79,7 +187,7 @@ export function RecipientInfoCard({
             htmlFor="studio-personal-greeting"
             className="block text-xs font-medium text-[var(--studio-muted)] mb-2"
           >
-            Optional Personal Greeting (Scene 2 Subtitle)
+            Optional Personal Greeting (Birthday Scene Subtitle)
           </label>
           <input
             id="studio-personal-greeting"
@@ -111,20 +219,36 @@ export function MessageEditorCard({
   };
 
   const addWish = () => {
+    const nextIdx = messages.wishes.length;
+    const currentAnims = messages.wishes.map((_, i) => ({
+      ...DEFAULT_WISH_ANIMATION_PRESETS[i % DEFAULT_WISH_ANIMATION_PRESETS.length],
+      ...(messages.wishAnimations?.[i] || {}),
+    }));
+    const newAnim = {
+      ...DEFAULT_WISH_ANIMATION_PRESETS[
+        nextIdx % DEFAULT_WISH_ANIMATION_PRESETS.length
+      ],
+    };
     onChangeMessages({
       ...messages,
       wishes: [
         ...messages.wishes,
         'May your heart always overflow with joy, peace, and blessings.',
       ],
+      wishAnimations: [...currentAnims, newAnim],
     });
   };
 
   const removeWish = (idx: number) => {
     if (messages.wishes.length <= 1) return;
+    const currentAnims = messages.wishes.map((_, i) => ({
+      ...DEFAULT_WISH_ANIMATION_PRESETS[i % DEFAULT_WISH_ANIMATION_PRESETS.length],
+      ...(messages.wishAnimations?.[i] || {}),
+    }));
     onChangeMessages({
       ...messages,
       wishes: messages.wishes.filter((_, i) => i !== idx),
+      wishAnimations: currentAnims.filter((_, i) => i !== idx),
     });
   };
 

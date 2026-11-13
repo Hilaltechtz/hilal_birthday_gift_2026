@@ -1,11 +1,13 @@
 import {
   RenderedVideoResult,
   resolveVideoDimensions,
+  resolveVideoScenes,
   StudioProjectConfig,
 } from '../types';
 import {
   dataUrlToArrayBuffer,
   scheduleBuiltInSoundtrack,
+  scheduleCalendarCueSounds,
 } from './audioAnalyzer';
 import {
   createParticleSeeds,
@@ -141,6 +143,7 @@ export async function renderBirthdayVideo(
 
   let audioBufferSource: AudioBufferSourceNode | null = null;
   let builtInStop: (() => void) | null = null;
+  let calendarSfxStop: (() => void) | null = null;
 
   // Draw frame 0 immediately so stream has initial video frame
   drawVideoFrame(ctx, preset.width, preset.height, 0, config, images, seeds);
@@ -222,6 +225,29 @@ export async function renderBirthdayVideo(
     builtInStop = handle.stop;
   }
 
+  // Mix synchronized calendar date ticks & golden reveal chime when Calendar Intro & SFX are enabled
+  const resolvedScenes = resolveVideoScenes(config);
+  const calendarScene = resolvedScenes.find((s) => s.id === 'calendar');
+  if (
+    calendarScene &&
+    config.calendarConfig?.enabled &&
+    config.calendarConfig.enableSoundEffects
+  ) {
+    const calStartSec = calendarScene.startFrac * duration;
+    const calDurSec = (calendarScene.endFrac - calendarScene.startFrac) * duration;
+    const calAudioHandle = scheduleCalendarCueSounds(
+      audioCtx,
+      audioDest,
+      audioCtx.currentTime,
+      0,
+      calStartSec,
+      calDurSec,
+      config.birthdayDay || 7,
+      0.65,
+    );
+    calendarSfxStop = calAudioHandle.stop;
+  }
+
   return await new Promise<RenderedVideoResult>((resolve, reject) => {
     let rafId = 0;
     let finished = false;
@@ -235,6 +261,7 @@ export async function renderBirthdayVideo(
         // Ignore
       }
       builtInStop?.();
+      calendarSfxStop?.();
       canvasStream.getTracks().forEach((tr) => tr.stop());
       audioDest.stream.getTracks().forEach((tr) => tr.stop());
       void audioCtx.close();
@@ -311,7 +338,7 @@ export async function renderBirthdayVideo(
 
       drawVideoFrame(ctx, preset.width, preset.height, t, config, images, seeds);
 
-      const { scene } = getSceneAtTime(t, duration);
+      const { scene } = getSceneAtTime(t, duration, config);
       onProgress({
         progress: Math.min(0.99, t / duration),
         currentTime: t,

@@ -1,11 +1,25 @@
 import {
+  DEFAULT_BEAT_SYNC_CONFIG,
+  DEFAULT_CAKE_CONFIG,
+  DEFAULT_CALENDAR_CONFIG,
+  DEFAULT_FONT_COLORS,
+  DEFAULT_PHOTO_EFFECT_CONFIG,
   DEFAULT_PROJECT_CONFIG,
+  DEFAULT_SENDER_INTRO_ANIMATION,
+  DEFAULT_SENDER_NAME_ANIMATION,
+  DEFAULT_SPECIAL_MESSAGE_ANIMATION,
+  DEFAULT_TEXT_COLOR_STYLE,
   DEFAULT_VIDEO_THEME,
   DEFAULT_WEBSITE_THEME,
+  DEFAULT_WISH_ANIMATION_PRESETS,
+  FontColorStudioConfig,
   StudioProjectConfig,
+  TextAnimationConfig,
+  TextColorElementId,
   VideoThemeConfig,
   WebsiteThemeConfig,
 } from '../types';
+import { clampDayToMonth, normalizeMonth, parseBirthdayString } from './calendarDateUtils';
 
 const DB_NAME = 'magical_birthday_studio_db';
 const DB_VERSION = 1;
@@ -121,11 +135,47 @@ export async function loadStudioProject(): Promise<StudioProjectConfig> {
         ...DEFAULT_PROJECT_CONFIG.photos[0].frame,
         ...(p.frame || {}),
       },
+      effect: {
+        ...DEFAULT_PHOTO_EFFECT_CONFIG,
+        ...(p.effect || {}),
+      },
+    }));
+
+    const parsedDate = parseBirthdayString(
+      saved.birthdayDate || DEFAULT_PROJECT_CONFIG.birthdayDate,
+    );
+    const birthdayMonth = normalizeMonth(
+      typeof saved.birthdayMonth === 'number'
+        ? saved.birthdayMonth
+        : parsedDate.month,
+    );
+    const birthdayYear =
+      typeof saved.birthdayYear === 'number' && saved.birthdayYear > 0
+        ? saved.birthdayYear
+        : parsedDate.year;
+    const birthdayDay = clampDayToMonth(
+      birthdayMonth,
+      typeof saved.birthdayDay === 'number' ? saved.birthdayDay : parsedDate.day,
+      birthdayYear,
+    );
+
+    const rawWishes = Array.isArray(saved.messages?.wishes)
+      ? saved.messages.wishes
+      : DEFAULT_PROJECT_CONFIG.messages.wishes;
+    const rawWishAnims = Array.isArray(saved.messages?.wishAnimations)
+      ? saved.messages.wishAnimations
+      : [];
+    const normalizedWishAnims: TextAnimationConfig[] = rawWishes.map((_, idx) => ({
+      ...DEFAULT_WISH_ANIMATION_PRESETS[idx % DEFAULT_WISH_ANIMATION_PRESETS.length],
+      ...(rawWishAnims[idx] || {}),
     }));
 
     return {
       ...DEFAULT_PROJECT_CONFIG,
       ...saved,
+      birthdayMonth,
+      birthdayDay,
+      birthdayYear,
       customAspect: {
         ...DEFAULT_PROJECT_CONFIG.customAspect,
         ...(saved.customAspect || {}),
@@ -133,11 +183,57 @@ export async function loadStudioProject(): Promise<StudioProjectConfig> {
       messages: {
         ...DEFAULT_PROJECT_CONFIG.messages,
         ...(saved.messages || {}),
+        wishes: rawWishes,
+        wishAnimations: normalizedWishAnims,
+        specialMessageAnimation: {
+          ...DEFAULT_SPECIAL_MESSAGE_ANIMATION,
+          ...(saved.messages?.specialMessageAnimation || {}),
+        },
+        senderIntroAnimation: {
+          ...DEFAULT_SENDER_INTRO_ANIMATION,
+          ...(saved.messages?.senderIntroAnimation || {}),
+        },
+        senderNameAnimation: {
+          ...DEFAULT_SENDER_NAME_ANIMATION,
+          ...(saved.messages?.senderNameAnimation || {}),
+        },
       },
       videoTheme: {
         ...DEFAULT_VIDEO_THEME,
         ...(saved.videoTheme || {}),
       },
+      calendarConfig: {
+        ...DEFAULT_CALENDAR_CONFIG,
+        ...(saved.calendarConfig || {}),
+      },
+      cakeConfig: {
+        ...DEFAULT_CAKE_CONFIG,
+        ...(saved.cakeConfig || {}),
+        effects: {
+          ...DEFAULT_CAKE_CONFIG.effects,
+          ...(saved.cakeConfig?.effects || {}),
+        },
+      },
+      beatSync: {
+        ...DEFAULT_BEAT_SYNC_CONFIG,
+        ...(saved.beatSync || {}),
+        manualMarkers: Array.isArray(saved.beatSync?.manualMarkers)
+          ? saved.beatSync.manualMarkers
+          : [],
+        removedDetectedBeatIds: Array.isArray(saved.beatSync?.removedDetectedBeatIds)
+          ? saved.beatSync.removedDetectedBeatIds
+          : [],
+        editedDetectedBeats: saved.beatSync?.editedDetectedBeats || {},
+      },
+      fontColors: (
+        Object.keys(DEFAULT_FONT_COLORS) as TextColorElementId[]
+      ).reduce((acc, key) => {
+        acc[key] = {
+          ...DEFAULT_TEXT_COLOR_STYLE,
+          ...(saved.fontColors?.[key] || {}),
+        };
+        return acc;
+      }, {} as FontColorStudioConfig),
       photos: normalizedPhotos,
     };
   } catch {

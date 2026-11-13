@@ -2,19 +2,25 @@ import {
   CheckCircle2,
   Download,
   Film,
+  Flame,
   Pause,
   Play,
   RotateCcw,
+  Scissors,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  CakeInteractionState,
   RenderedVideoResult,
   resolveVideoDimensions,
+  resolveVideoScenes,
   StudioProjectConfig,
-  VIDEO_SCENES,
 } from '../../types';
-import { scheduleBuiltInSoundtrack } from '../../utils/audioAnalyzer';
+import {
+  scheduleBuiltInSoundtrack,
+  scheduleCalendarCueSounds,
+} from '../../utils/audioAnalyzer';
 import {
   createParticleSeeds,
   drawVideoFrame,
@@ -63,13 +69,22 @@ export function VideoPreviewAndExport({
   const [previewTime, setPreviewTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [images, setImages] = useState<LoadedImageMap>({});
+  const [cakeState, setCakeState] = useState<CakeInteractionState>({
+    extinguished: false,
+    extinguishedAtSec: null,
+    cut: false,
+    cutAtSec: null,
+  });
+  const [cakeClockSec, setCakeClockSec] = useState(0);
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewCtxRef = useRef<AudioContext | null>(null);
   const previewSynthStopRef = useRef<(() => void) | null>(null);
+  const previewCalSfxStopRef = useRef<(() => void) | null>(null);
 
   const seeds = useMemo(() => createParticleSeeds(150), []);
   const preset = resolveVideoDimensions(config);
+  const scenes = useMemo(() => resolveVideoScenes(config), [config]);
   const aspectRatioValue = preset.width / Math.max(1, preset.height);
 
   // Preload photos whenever photo list changes
@@ -99,6 +114,10 @@ export function VideoPreviewAndExport({
       previewSynthStopRef.current();
       previewSynthStopRef.current = null;
     }
+    if (previewCalSfxStopRef.current) {
+      previewCalSfxStopRef.current();
+      previewCalSfxStopRef.current = null;
+    }
     if (previewCtxRef.current) {
       void previewCtxRef.current.close();
       previewCtxRef.current = null;
@@ -117,13 +136,51 @@ export function VideoPreviewAndExport({
     }
   }, [isRendering]);
 
-  // Draw live preview frame whenever time/config/images update
+  useEffect(() => {
+    if (previewAudioRef.current && config.music) {
+      previewAudioRef.current.volume = config.music.volume;
+    }
+  }, [config.music?.volume]);
+
+  // Keep cake interactive clock moving smoothly while paused on Cake Scene if extinguished or cut
+  useEffect(() => {
+    if (renderedVideo || isRendering) return;
+    if (!cakeState.extinguished && !cakeState.cut && isPlaying) return;
+    const activeScene = getSceneAtTime(previewTime, config.durationSeconds, config).scene;
+    if (!cakeState.extinguished && !cakeState.cut && activeScene.id !== 'cake') return;
+    if (isPlaying) return;
+
+    let rafId = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      setCakeClockSec((c) => c + dt);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [
+    cakeState.extinguished,
+    cakeState.cut,
+    isPlaying,
+    previewTime,
+    config,
+    renderedVideo,
+    isRendering,
+  ]);
+
+  // Draw live preview frame whenever time/config/images/cakeState update
   useEffect(() => {
     if (renderedVideo) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    const effectiveCakeState =
+      cakeState.extinguished || cakeState.cut ? cakeState : undefined;
+
     drawVideoFrame(
       ctx,
       preset.width,
@@ -132,6 +189,10 @@ export function VideoPreviewAndExport({
       config,
       images,
       seeds,
+      {
+        cakeState: effectiveCakeState,
+        interactionClockSec: isPlaying ? previewTime : cakeClockSec,
+      },
     );
   }, [
     previewTime,
@@ -141,6 +202,9 @@ export function VideoPreviewAndExport({
     preset.width,
     preset.height,
     renderedVideo,
+    cakeState,
+    cakeClockSec,
+    isPlaying,
   ]);
 
   // Real-time preview playback loop
@@ -152,6 +216,11 @@ export function VideoPreviewAndExport({
     const startPerf = performance.now();
 
     stopPreviewSound();
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+
     if (config.music?.dataUrl) {
       const el = new Audio(config.music.dataUrl);
       el.volume = config.music.volume;
@@ -164,14 +233,13 @@ export function VideoPreviewAndExport({
       void el.play().catch(() => {
         // Autoplay restriction safe fallback
       });
-    } else {
-      try {
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        const ctx = new AudioCtx();
-        previewCtxRef.current = ctx;
+    }
+
+    try {
+      const ctx = new AudioCtx();
+      previewCtxRef.current = ctx;
+
+      if (!config.music?.dataUrl) {
         const remaining = Math.max(1, config.durationSeconds - startTimeVal);
         const handle = scheduleBuiltInSoundtrack(
           ctx,
@@ -181,9 +249,31 @@ export function VideoPreviewAndExport({
           0.7,
         );
         previewSynthStopRef.current = handle.stop;
-      } catch {
-        // Ignore if audio context fails
       }
+
+      const calScene = scenes.find((s) => s.id === 'calendar');
+      if (
+        calScene &&
+        config.calendarConfig?.enabled &&
+        config.calendarConfig.enableSoundEffects
+      ) {
+        const calStartSec = calScene.startFrac * config.durationSeconds;
+        const calDurSec =
+          (calScene.endFrac - calScene.startFrac) * config.durationSeconds;
+        const calHandle = scheduleCalendarCueSounds(
+          ctx,
+          ctx.destination,
+          ctx.currentTime,
+          startTimeVal,
+          calStartSec,
+          calDurSec,
+          config.birthdayDay || 7,
+          0.6,
+        );
+        previewCalSfxStopRef.current = calHandle.stop;
+      }
+    } catch {
+      // Ignore if audio context fails
     }
 
     let rafId = 0;
@@ -238,7 +328,42 @@ export function VideoPreviewAndExport({
     document.body.removeChild(link);
   };
 
-  const currentSceneInfo = getSceneAtTime(previewTime, config.durationSeconds);
+  const currentSceneInfo = getSceneAtTime(
+    previewTime,
+    config.durationSeconds,
+    config,
+  );
+
+  const ensureOnCakeScene = () => {
+    const cakeScene = scenes.find((s) => s.id === 'cake');
+    if (cakeScene && currentSceneInfo.scene.id !== 'cake') {
+      setIsPlaying(false);
+      stopPreviewSound();
+      const targetTime = cakeScene.startFrac * config.durationSeconds + 0.35;
+      setPreviewTime(targetTime);
+      setCakeClockSec(targetTime);
+      return targetTime;
+    }
+    return isPlaying ? previewTime : cakeClockSec;
+  };
+
+  const handleInteractiveExtinguish = () => {
+    const clock = ensureOnCakeScene();
+    setCakeState((prev) =>
+      prev.extinguished
+        ? { ...prev, extinguished: false, extinguishedAtSec: null }
+        : { ...prev, extinguished: true, extinguishedAtSec: clock },
+    );
+  };
+
+  const handleInteractiveCutCake = () => {
+    const clock = ensureOnCakeScene();
+    setCakeState((prev) =>
+      prev.cut
+        ? { ...prev, cut: false, cutAtSec: null }
+        : { ...prev, cut: true, cutAtSec: clock },
+    );
+  };
 
   // Smoothly fit tall, square, wide, and custom aspect ratios inside the monitor
   const viewportMaxHeight = aspectRatioValue < 0.85 ? 440 : 340;
@@ -379,8 +504,12 @@ export function VideoPreviewAndExport({
             />
           </div>
 
-          <div className="grid grid-cols-6 gap-1">
-            {VIDEO_SCENES.map((scene) => {
+          <div
+            className={`grid gap-1 ${
+              scenes.length === 7 ? 'grid-cols-4 sm:grid-cols-7' : 'grid-cols-3 sm:grid-cols-6'
+            }`}
+          >
+            {scenes.map((scene) => {
               const active = currentSceneInfo.scene.id === scene.id;
               return (
                 <button
@@ -403,6 +532,46 @@ export function VideoPreviewAndExport({
                 </button>
               );
             })}
+          </div>
+
+          {/* Interactive Cake Stage Actions inside Live Monitor */}
+          <div className="pt-2 border-t border-[var(--studio-border-soft)] flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] text-[var(--studio-muted)]">
+              Interactive Cake Show:
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                disabled={isRendering}
+                onClick={handleInteractiveExtinguish}
+                className={`h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50 ${
+                  cakeState.extinguished
+                    ? 'border-[var(--studio-primary)] bg-[var(--studio-active-tile)] text-[var(--studio-heading)]'
+                    : 'border-[var(--studio-border)] bg-[var(--studio-subcard)] text-[var(--studio-text)] hover:border-[var(--studio-border-strong)]'
+                }`}
+              >
+                <Flame className="h-3 w-3" />
+                <span>
+                  {cakeState.extinguished
+                    ? 'Relight Candles'
+                    : 'Extinguish Candles'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isRendering}
+                onClick={handleInteractiveCutCake}
+                className={`h-8 px-2.5 rounded-lg border text-[11px] font-medium inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50 ${
+                  cakeState.cut
+                    ? 'border-[var(--studio-primary)] bg-[var(--studio-active-tile)] text-[var(--studio-heading)]'
+                    : 'border-[var(--studio-border)] bg-[var(--studio-subcard)] text-[var(--studio-text)] hover:border-[var(--studio-border-strong)]'
+                }`}
+              >
+                <Scissors className="h-3 w-3" />
+                <span>{cakeState.cut ? 'Reset Slice' : 'Cut Cake'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
